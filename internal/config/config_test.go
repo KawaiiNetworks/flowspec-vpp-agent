@@ -24,8 +24,24 @@ bgp:
 	if cfg.Interfaces.Mode != "all" || cfg.Interfaces.Direction != "ingress" {
 		t.Errorf("interface defaults = %+v", cfg.Interfaces)
 	}
+	if cfg.Metrics.Listen != "" {
+		t.Errorf("default metrics.listen = %q, want disabled", cfg.Metrics.Listen)
+	}
 	if len(cfg.BGP.Peers) != 1 || !cfg.BGP.Peers[0].Passive {
 		t.Errorf("peers = %+v", cfg.BGP.Peers)
+	}
+}
+
+func TestParse_MetricsListenEnabled(t *testing.T) {
+	cfg, err := Parse([]byte(`
+metrics:
+  listen: "127.0.0.1:9469"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Metrics.Listen != "127.0.0.1:9469" {
+		t.Errorf("metrics.listen = %q", cfg.Metrics.Listen)
 	}
 }
 
@@ -33,6 +49,7 @@ func TestValidate_Errors(t *testing.T) {
 	cases := []string{
 		"bgp:\n  listen: nonsense\n",
 		"bgp:\n  router_id: 2001:db8::1\n",
+		"metrics:\n  listen: bad-port\n",
 		"interfaces:\n  mode: bogus\n",
 		"interfaces:\n  mode: list\n", // list mode without list
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",

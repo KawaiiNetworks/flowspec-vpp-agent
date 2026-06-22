@@ -21,6 +21,8 @@ services:
     # Access the root-owned api.sock. Infrastructure agent runs as root (§19.3).
     user: "0:0"
 
+    # With metrics.listen unset (the default), this is a no-op. If you enable the
+    # optional metrics/health listener, it probes the local /healthz endpoint.
     healthcheck:
       test: ["CMD", "/flowspec-vpp-agent", "healthcheck"]
       interval: 30s

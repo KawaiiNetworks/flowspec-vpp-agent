@@ -93,12 +93,12 @@ Prometheus 指标与健康检查的 HTTP 端点。
 
 ```yaml
 metrics:
-  listen: "0.0.0.0:9469"
+  listen: ""
 ```
 
-| 字段     | 类型   | 默认值          | 说明 |
-| -------- | ------ | --------------- | ---- |
-| `listen` | string | `0.0.0.0:9469`  | 暴露 `/metrics` 和 `/healthz` 的 `host:port`。必须是合法 `host:port`。`healthcheck` 子命令会请求本机该端口的 `/healthz`。 |
+| 字段     | 类型   | 默认值 | 说明 |
+| -------- | ------ | ------ | ---- |
+| `listen` | string | 空字符串 | 空值表示不启动 HTTP 监听。设置为合法 `host:port`（如 `127.0.0.1:9469` 或 `0.0.0.0:9469`）后才暴露 `/metrics` 和 `/healthz`；`healthcheck` 子命令会请求本机该端口的 `/healthz`。 |
 
 暴露的指标：
 

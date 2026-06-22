@@ -23,8 +23,10 @@ ACL 插件（`acl_add_replace`，走 GoVPP binary API）下发等价的 **VPP AC
 - **多会话：** 多个 BGP peer 的规则按引用计数合并进同一组 Managed ACL（IPv4 一个、IPv6 一个）。
   不同会话的相同规则只生成一条 entry；最后一个持有者撤销时才删除；会话断开等价撤销其全部规则。
 - **应用：** 两个 Managed ACL 默认挂到全部数据面接口的入向（ingress）；可配置。
-- **可观测性：** `flowspec_rules_ignored_total{reason,family,peer}`、
-  `flowspec_rules_applied_total{family,peer}`、`flowspec_acl_entries{family}`。
+- **可观测性：** Prometheus collector 提供
+  `flowspec_rules_ignored_total{reason,family,peer}`、
+  `flowspec_rules_applied_total{family,peer}`、`flowspec_acl_entries{family}`；
+  HTTP `/metrics` 监听默认关闭。
 
 ## 架构
 

@@ -64,8 +64,8 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Metrics + health HTTP first, so the container healthcheck works even while
-	// VPP is still being dialed.
+	// Metrics collectors are always active internally; the HTTP endpoint is
+	// opt-in, so default deployments do not expose an extra listener.
 	reg := prometheus.NewRegistry()
 	met := metrics.New(reg)
 	httpSrv := startHTTP(cfg.Metrics.Listen, reg, logger)
@@ -174,6 +174,10 @@ func newLogger(l config.Log) *slog.Logger {
 }
 
 func startHTTP(addr string, reg *prometheus.Registry, logger *slog.Logger) *http.Server {
+	if addr == "" {
+		logger.Info("metrics/health endpoint disabled")
+		return nil
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -191,6 +195,9 @@ func startHTTP(addr string, reg *prometheus.Registry, logger *slog.Logger) *http
 }
 
 func shutdownHTTP(srv *http.Server, logger *slog.Logger) {
+	if srv == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
@@ -199,15 +206,21 @@ func shutdownHTTP(srv *http.Server, logger *slog.Logger) {
 }
 
 // runHealthcheck implements the `healthcheck` subcommand used by the compose
-// healthcheck (§19.1): it GETs the local /healthz endpoint.
+// healthcheck (§19.1). When the optional HTTP endpoint is enabled, it GETs the
+// local /healthz endpoint; when it is disabled, there is no listener to probe.
 func runHealthcheck(args []string) int {
 	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
 	cfgPath := fs.String("config", defaultConfigPath, "path to config.yaml")
 	_ = fs.Parse(args)
 
-	addr := "0.0.0.0:9469"
-	if cfg, err := config.Load(*cfgPath); err == nil {
-		addr = cfg.Metrics.Listen
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck config error:", err)
+		return 1
+	}
+	addr := cfg.Metrics.Listen
+	if addr == "" {
+		return 0
 	}
 	// Connect to loopback regardless of the configured bind host.
 	_, port := splitListen(addr)

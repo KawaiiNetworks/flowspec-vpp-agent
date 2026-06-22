@@ -30,8 +30,8 @@ interfaces:
   direction: ingress            # "ingress" (default) or "egress"
 
 metrics:
-  # Prometheus /metrics and /healthz endpoint.
-  listen: "0.0.0.0:9469"
+  # Prometheus /metrics and /healthz endpoint. Empty disables the HTTP listener.
+  listen: ""
 
 log:
   level: info                   # debug|info|warn|error

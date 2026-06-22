@@ -52,7 +52,7 @@ type Interfaces struct {
 
 // Metrics controls the Prometheus/health HTTP endpoint.
 type Metrics struct {
-	Listen string `yaml:"listen"` // host:port for /metrics and /healthz
+	Listen string `yaml:"listen"` // host:port for /metrics and /healthz; empty disables HTTP
 }
 
 // Log controls logging.
@@ -74,9 +74,6 @@ func defaults() Config {
 		Interfaces: Interfaces{
 			Mode:      "all",
 			Direction: "ingress",
-		},
-		Metrics: Metrics{
-			Listen: "0.0.0.0:9469",
 		},
 		Log: Log{Level: "info", Format: "text"},
 	}
@@ -142,8 +139,10 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("interfaces.direction %q must be 'ingress' or 'egress'", c.Interfaces.Direction)
 	}
-	if err := validateHostPort(c.Metrics.Listen, "metrics.listen"); err != nil {
-		return err
+	if c.Metrics.Listen != "" {
+		if err := validateHostPort(c.Metrics.Listen, "metrics.listen"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

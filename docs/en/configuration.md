@@ -98,12 +98,12 @@ The Prometheus metrics and health-check HTTP endpoint.
 
 ```yaml
 metrics:
-  listen: "0.0.0.0:9469"
+  listen: ""
 ```
 
-| Field    | Type   | Default         | Description |
-| -------- | ------ | --------------- | ----------- |
-| `listen` | string | `0.0.0.0:9469`  | `host:port` exposing `/metrics` and `/healthz`. Must be a valid `host:port`. The `healthcheck` subcommand requests `/healthz` on this port locally. |
+| Field    | Type   | Default      | Description |
+| -------- | ------ | ------------ | ----------- |
+| `listen` | string | empty string | Empty disables the HTTP listener. Set a valid `host:port` such as `127.0.0.1:9469` or `0.0.0.0:9469` to expose `/metrics` and `/healthz`; the `healthcheck` subcommand requests `/healthz` on that port locally. |
 
 Exposed metrics:
 

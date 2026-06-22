@@ -24,6 +24,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /flowspec-vpp-agent /flowspec-vpp-agent
 # Runs as root in deployment (see compose user: "0:0") to access /run/vpp/api.sock.
-EXPOSE 10179 9469
+EXPOSE 10179
 ENTRYPOINT ["/flowspec-vpp-agent"]
 CMD ["-config", "/etc/flowspec-vpp-agent/config.yaml"]

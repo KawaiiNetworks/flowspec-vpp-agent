@@ -99,7 +99,8 @@ bgp:
 - `volumes` 挂载 `/run/vpp`（一次覆盖 api.sock 与 stats.sock）和 `./config` 配置目录。
 - `network_mode: host`：BGP 监听端口直接落在宿主机；socket 仍走挂载，无需容器网络。
 - `user: "0:0"`：以 root 访问 root 持有的 api.sock。
-- `healthcheck` 调用 `flowspec-vpp-agent healthcheck`，请求本机 `/healthz`。
+- `healthcheck` 调用 `flowspec-vpp-agent healthcheck`；只有显式开启 metrics/health
+  HTTP 监听时才会请求本机 `/healthz`，默认不额外监听。
 
 启动：
 
@@ -141,6 +142,13 @@ agent 会以 root 访问 VPP socket；socket 未就绪或 VPP 重启时退避重
 ## 7. 验证生效
 
 ### 7.1 健康检查与指标
+
+metrics/health HTTP 监听默认关闭。需要本地健康检查和 Prometheus 抓取时显式开启：
+
+```yaml
+metrics:
+  listen: "127.0.0.1:9469"
+```
 
 ```sh
 curl -s http://127.0.0.1:9469/healthz          # 应返回 ok

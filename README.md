@@ -31,8 +31,10 @@ Detailed docs: [deployment & usage tutorial](docs/en/tutorial.md) and
   withdraws; a session going down withdraws all of its rules.
 - **Application:** both Managed ACLs are attached to all data-plane interfaces in
   the ingress direction by default; configurable.
-- **Observability:** `flowspec_rules_ignored_total{reason,family,peer}`,
-  `flowspec_rules_applied_total{family,peer}`, `flowspec_acl_entries{family}`.
+- **Observability:** Prometheus collectors for
+  `flowspec_rules_ignored_total{reason,family,peer}`,
+  `flowspec_rules_applied_total{family,peer}`, `flowspec_acl_entries{family}`;
+  the HTTP `/metrics` listener is disabled by default.
 
 ## Architecture
 

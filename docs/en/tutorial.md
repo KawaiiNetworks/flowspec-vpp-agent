@@ -109,8 +109,8 @@ points:
 - `network_mode: host`: the BGP listen port lands directly on the host; the socket
   still travels over the bind mount, so no container network is needed.
 - `user: "0:0"`: run as root to access the root-owned api.sock.
-- `healthcheck` runs `flowspec-vpp-agent healthcheck`, which requests `/healthz`
-  locally.
+- `healthcheck` runs `flowspec-vpp-agent healthcheck`; it is a no-op unless the
+  optional metrics/health HTTP listener is enabled.
 
 Start it:
 
@@ -156,6 +156,14 @@ supervisor, …) and enable automatic restart on failure.
 ## 7. Verify
 
 ### 7.1 Health and metrics
+
+The metrics/health HTTP listener is disabled by default. Enable it explicitly if
+you want local health and Prometheus scraping:
+
+```yaml
+metrics:
+  listen: "127.0.0.1:9469"
+```
 
 ```sh
 curl -s http://127.0.0.1:9469/healthz          # should return ok
