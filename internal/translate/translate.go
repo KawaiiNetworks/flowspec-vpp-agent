@@ -111,6 +111,18 @@ func Translate(r flowspec.Rule) (vpp.ACLRule, error) {
 		}
 	}
 
+	portPresent := len(m.SrcPort) > 0 || len(m.DstPort) > 0
+	if portPresent {
+		if !protoPresent {
+			return vpp.ACLRule{}, unsupported(ReasonUnsupportedExpression,
+				"source/destination port present without tcp/udp protocol")
+		}
+		if proto != protoTCP && proto != protoUDP {
+			return vpp.ACLRule{}, unsupported(ReasonUnsupportedExpression,
+				fmt.Sprintf("source/destination port present but protocol is %d, not tcp/udp", proto))
+		}
+	}
+
 	out := vpp.ACLRule{
 		IsIPv6: r.Family == flowspec.FamilyIPv6,
 		Permit: false, // deny (§10)

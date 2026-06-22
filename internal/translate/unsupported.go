@@ -4,6 +4,8 @@
 // a typed Unsupported reason so the caller can log it and bump the right metric.
 package translate
 
+import "errors"
+
 // Reason enumerates the ignore reasons that are surfaced as the `reason`
 // dimension of the flowspec_rules_ignored_total metric (§12).
 type Reason string
@@ -37,8 +39,11 @@ func (u *Unsupported) Error() string {
 
 // AsUnsupported extracts the *Unsupported from an error, if present.
 func AsUnsupported(err error) (*Unsupported, bool) {
-	u, ok := err.(*Unsupported)
-	return u, ok
+	var u *Unsupported
+	if errors.As(err, &u) {
+		return u, true
+	}
+	return nil, false
 }
 
 func unsupported(r Reason, detail string) error {

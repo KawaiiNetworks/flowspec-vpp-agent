@@ -124,6 +124,38 @@ func TestTranslate_TCPFlags_NonTCPProto_Rejected(t *testing.T) {
 	assertReason(t, err, ReasonUnsupportedExpression)
 }
 
+func TestTranslate_TCPFlags_MultiBitAnyRejected(t *testing.T) {
+	r := flowspec.Rule{
+		Family: flowspec.FamilyIPv4,
+		Action: drop(),
+		Match: flowspec.Match{
+			Proto:    eq(protoTCP),
+			TCPFlags: []flowspec.BitmaskOp{{Value: tcpSYN | tcpACK}}, // m=0: SYN or ACK
+		},
+	}
+	_, err := Translate(r)
+	assertReason(t, err, ReasonUnsupportedExpression)
+}
+
+func TestTranslate_TCPFlags_MultiBitAllAccepted(t *testing.T) {
+	r := flowspec.Rule{
+		Family: flowspec.FamilyIPv4,
+		Action: drop(),
+		Match: flowspec.Match{
+			Proto:    eq(protoTCP),
+			TCPFlags: []flowspec.BitmaskOp{{Match: true, Value: tcpSYN | tcpACK}},
+		},
+	}
+	got, err := Translate(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TCPFlagsValue != tcpSYN|tcpACK || got.TCPFlagsMask != tcpSYN|tcpACK {
+		t.Fatalf("tcp flags value/mask = %#x/%#x, want %#x/%#x",
+			got.TCPFlagsValue, got.TCPFlagsMask, tcpSYN|tcpACK, tcpSYN|tcpACK)
+	}
+}
+
 func TestTranslate_ICMP_InferProto_V4(t *testing.T) {
 	r := flowspec.Rule{
 		Family: flowspec.FamilyIPv4,
@@ -229,11 +261,20 @@ func TestTranslate_Unsupported(t *testing.T) {
 		{"packet length", base(flowspec.Match{HasPacketLen: true}), ReasonUnsupportedComponent},
 		{"dscp", base(flowspec.Match{HasDSCP: true}), ReasonUnsupportedComponent},
 		{"fragment", base(flowspec.Match{Fragment: []flowspec.BitmaskOp{{Value: 2}}}), ReasonUnsupportedComponent},
+		{"dport without protocol", base(flowspec.Match{DstPort: eq(443)}), ReasonUnsupportedExpression},
+		{"dport with icmp protocol", base(flowspec.Match{Proto: eq(protoICMP),
+			DstPort: eq(443)}), ReasonUnsupportedExpression},
+		{"icmp type with dport", base(flowspec.Match{ICMPType: eq(8),
+			DstPort: eq(443)}), ReasonUnsupportedExpression},
 		{"dport !=", base(flowspec.Match{Proto: eq(6),
 			DstPort: []flowspec.NumericOp{{LT: true, GT: true, Value: 80}}}), ReasonUnsupportedExpression},
 		{"dport OR", base(flowspec.Match{Proto: eq(6),
 			DstPort: []flowspec.NumericOp{{EQ: true, Value: 80}, {EQ: true, Value: 443}}}), ReasonUnsupportedExpression},
+		{"dport out of range", base(flowspec.Match{Proto: eq(6),
+			DstPort: eq(portMax + 1)}), ReasonUnsupportedExpression},
 		{"proto >", base(flowspec.Match{Proto: gt(10)}), ReasonUnsupportedExpression},
+		{"tcp-flags high bit", base(flowspec.Match{Proto: eq(6),
+			TCPFlags: []flowspec.BitmaskOp{{Value: 1 << 8}}}), ReasonUnsupportedExpression},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

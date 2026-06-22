@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
@@ -76,6 +77,7 @@ func v4UDPRule(t *testing.T, dst string, dport uint64) *flowspec.Rule {
 	return &flowspec.Rule{
 		Family: flowspec.FamilyIPv4,
 		Action: flowspec.Action{Kind: flowspec.ActionDrop, Desc: "discard"},
+		Raw:    fmt.Sprintf("dst %s udp dport %d", dst, dport),
 		Match: flowspec.Match{
 			HasDst:  true,
 			Dst:     pfx(t, dst),
@@ -210,5 +212,47 @@ func TestUnsupported_IgnoredMetric(t *testing.T) {
 	}
 	if mx.applied["ipv4/10.0.0.1"] != 0 {
 		t.Fatalf("applied metric should be 0 for ignored rule")
+	}
+}
+
+func TestAnnounce_ReplacesSameNLRIWithUnsupported(t *testing.T) {
+	fb := newFake()
+	mx := newMetrics()
+	m := New(fb, mx, nil)
+	ctx := context.Background()
+
+	good := v4UDPRule(t, "203.0.113.10/32", 443)
+	good.Raw = "same-nlri"
+	bad := *good
+	bad.Action = flowspec.Action{Kind: flowspec.ActionUnsupported, Desc: "redirect"}
+
+	m.Apply(ctx, ann("s1", "10.0.0.1", good))
+	if got := fb.count(vpp.IPv4); got != 1 {
+		t.Fatalf("setup entries = %d, want 1", got)
+	}
+
+	m.Apply(ctx, ann("s1", "10.0.0.1", &bad))
+
+	if got := fb.count(vpp.IPv4); got != 0 {
+		t.Fatalf("unsupported replacement left %d entries, want 0", got)
+	}
+	if mx.ignored["unsupported_action/ipv4/10.0.0.1"] != 1 {
+		t.Fatalf("ignored metric not recorded: %+v", mx.ignored)
+	}
+}
+
+func TestAnnounce_AppliedMetricOnlyForNewOwner(t *testing.T) {
+	fb := newFake()
+	mx := newMetrics()
+	m := New(fb, mx, nil)
+	ctx := context.Background()
+
+	r := v4UDPRule(t, "203.0.113.10/32", 443)
+
+	m.Apply(ctx, ann("s1", "10.0.0.1", r))
+	m.Apply(ctx, ann("s1", "10.0.0.1", r))
+
+	if got := mx.applied["ipv4/10.0.0.1"]; got != 1 {
+		t.Fatalf("applied metric = %d, want 1 after duplicate announce", got)
 	}
 }

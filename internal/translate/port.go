@@ -74,8 +74,8 @@ func reduceRange(ops []flowspec.NumericOp, max uint64, what string) (lo, hi uint
 func opToSet(op flowspec.NumericOp, max uint64) ([]interval, error) {
 	v := op.Value
 	if v > max {
-		// Clamp the operand into the domain so comparisons stay well-defined.
-		v = max
+		return nil, unsupported(ReasonUnsupportedExpression,
+			fmt.Sprintf("numeric operand %d out of range 0-%d", v, max))
 	}
 	switch {
 	case !op.LT && !op.GT && !op.EQ:

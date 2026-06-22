@@ -50,6 +50,10 @@ type Manager struct {
 	// sessionRules tracks which keys each session advertises, so a session
 	// going down can withdraw exactly its rules (§17).
 	sessionRules map[bgp.SessionID]map[string]struct{}
+	// sessionRoutes tracks per-session FlowSpec NLRI replacement. A later
+	// announce for the same NLRI replaces the old ACL key, even when the new rule
+	// is unsupported and produces no replacement entry.
+	sessionRoutes map[bgp.SessionID]map[string]string
 }
 
 // New builds a Manager. metrics may be nil.
@@ -61,11 +65,12 @@ func New(backend vpp.Backend, metrics Metrics, logger *slog.Logger) *Manager {
 		logger = slog.Default()
 	}
 	return &Manager{
-		backend:      backend,
-		metrics:      metrics,
-		log:          logger,
-		entries:      make(map[string]*entry),
-		sessionRules: make(map[bgp.SessionID]map[string]struct{}),
+		backend:       backend,
+		metrics:       metrics,
+		log:           logger,
+		entries:       make(map[string]*entry),
+		sessionRules:  make(map[bgp.SessionID]map[string]struct{}),
+		sessionRoutes: make(map[bgp.SessionID]map[string]string),
 	}
 }
 
@@ -113,19 +118,34 @@ func (m *Manager) announce(ctx context.Context, u bgp.Update) {
 		return
 	}
 	r := *u.Rule
+	routeID := routeIdentity(r)
+	dirtyFams := map[vpp.Family]struct{}{}
 	acl, err := translate.Translate(r)
 	if err != nil {
+		if fam, dirty := m.removeRoute(routeID, u.Session); dirty {
+			dirtyFams[fam] = struct{}{}
+		}
 		m.reportIgnored(r, u.Peer, err)
+		for fam := range dirtyFams {
+			m.reconcile(ctx, fam)
+		}
 		return
 	}
 	key := acl.Key()
 	fam := familyOf(acl)
 
+	if oldFam, dirty := m.replaceRoute(routeID, key, u.Session); dirty {
+		dirtyFams[oldFam] = struct{}{}
+	}
 	dirty := m.addOwner(key, acl, fam, u.Session)
-	m.metrics.RuleApplied(r.Family.String(), u.Peer)
-	m.log.Debug("flowspec rule applied",
-		"session", u.Session, "peer", u.Peer, "family", r.Family.String(), "key", key)
+	m.rememberRoute(routeID, key, u.Session)
 	if dirty {
+		m.metrics.RuleApplied(r.Family.String(), u.Peer)
+		m.log.Debug("flowspec rule applied",
+			"session", u.Session, "peer", u.Peer, "family", r.Family.String(), "key", key)
+		dirtyFams[fam] = struct{}{}
+	}
+	for fam := range dirtyFams {
 		m.reconcile(ctx, fam)
 	}
 }
@@ -146,6 +166,7 @@ func (m *Manager) withdraw(ctx context.Context, u bgp.Update) {
 	}
 	key := acl.Key()
 	fam := familyOf(acl)
+	m.forgetRoute(routeIdentity(r), u.Session, key)
 	if m.removeOwner(key, u.Session) {
 		m.reconcile(ctx, fam)
 	}
@@ -166,6 +187,7 @@ func (m *Manager) sessionDown(ctx context.Context, u bgp.Update) {
 		}
 	}
 	delete(m.sessionRules, u.Session)
+	delete(m.sessionRoutes, u.Session)
 	for fam := range dirty {
 		m.reconcile(ctx, fam)
 	}
