@@ -1,0 +1,32 @@
+# Deployment for flowspec-vpp-agent (§19). The agent runs in a container; VPP runs
+# on the host (or its own container). They communicate over the VPP binary API
+# unix socket under /run/vpp — a single bind mount covers both api.sock and
+# stats.sock. No network is required between them.
+services:
+  flowspec-vpp-agent:
+    image: kawaiinetworks/flowspec-vpp-agent:main
+    restart: unless-stopped
+
+    # VPP binary API + stats socket both live under /run/vpp.
+    volumes:
+      - /run/vpp:/run/vpp:z          # podman + SELinux needs :z; plain docker can drop it
+      # Mount the whole config directory; the agent reads config.yaml inside it.
+      - ./config:/etc/flowspec-vpp-agent:ro
+
+    # The embedded GoBGP speaker must be reachable by FlowSpec peers; host
+    # networking puts the BGP listen port (default 10179) directly on the host
+    # while the socket still travels over the bind mount.
+    network_mode: host
+
+    # Access the root-owned api.sock. Infrastructure agent runs as root (§19.3).
+    user: "0:0"
+
+    healthcheck:
+      test: ["CMD", "/flowspec-vpp-agent", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+
+    # If you prefer bridge isolation over host networking, drop network_mode and
+    # publish the BGP port instead (the /run/vpp mount is unchanged):
+    #   ports:
+    #     - "10179:10179"

@@ -1,0 +1,38 @@
+# Example configuration for flowspec-vpp-agent (§19.2).
+
+vpp:
+  # VPP binary API socket and stats socket (both under /run/vpp, §19).
+  socket: /run/vpp/api.sock
+  stats_socket: /run/vpp/stats.sock
+
+bgp:
+  # Embedded GoBGP speaker. Default port 10179 avoids a native BGP daemon on 179.
+  listen: "0.0.0.0:10179"
+  router_id: "192.0.2.1"
+  asn: 65000
+  # Multiple peers = multiple FlowSpec sessions (§17). Each peer's rules are
+  # reference-counted into the shared Managed ACLs.
+  peers:
+    - address: "198.51.100.1"   # e.g. a FastNetMon FlowSpec exporter
+      peer_asn: 65001
+      passive: true             # listen-only is typical for FlowSpec collectors
+    - address: "198.51.100.2"
+      peer_asn: 65001
+      passive: true
+
+interfaces:
+  # Where the Managed ACLs are applied (§16). Default: all data-plane interfaces,
+  # ingress. FlowSpec carries no interface info, so this is local policy.
+  mode: all                     # "all" or "list"
+  # list:                       # required when mode: list
+  #   - GigabitEthernet0/0/0
+  #   - GigabitEthernet0/0/1
+  direction: ingress            # "ingress" (default) or "egress"
+
+metrics:
+  # Prometheus /metrics and /healthz endpoint.
+  listen: "0.0.0.0:9469"
+
+log:
+  level: info                   # debug|info|warn|error
+  format: text                  # text|json
