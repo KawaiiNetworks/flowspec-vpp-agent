@@ -34,6 +34,8 @@ bgp:
 
 func TestParse_MetricsListenEnabled(t *testing.T) {
 	cfg, err := Parse([]byte(`
+bgp:
+  router_id: 192.0.2.1
 metrics:
   listen: "127.0.0.1:9469"
 `))
@@ -45,9 +47,31 @@ metrics:
 	}
 }
 
+func TestParse_IPv6Listen(t *testing.T) {
+	cfg, err := Parse([]byte(`
+bgp:
+  listen: "[2001:db8::1]:10179"
+  router_id: 192.0.2.1
+metrics:
+  listen: "[::1]:9469"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BGP.Listen != "[2001:db8::1]:10179" {
+		t.Errorf("bgp.listen = %q", cfg.BGP.Listen)
+	}
+	if cfg.Metrics.Listen != "[::1]:9469" {
+		t.Errorf("metrics.listen = %q", cfg.Metrics.Listen)
+	}
+}
+
 func TestValidate_Errors(t *testing.T) {
 	cases := []string{
+		"bgp:\n  asn: 65000\n", // missing router_id
 		"bgp:\n  listen: nonsense\n",
+		"bgp:\n  listen: ':10179'\n  router_id: 192.0.2.1\n",
+		"bgp:\n  listen: '[not-ip]:10179'\n  router_id: 192.0.2.1\n",
 		"bgp:\n  router_id: 2001:db8::1\n",
 		"metrics:\n  listen: bad-port\n",
 		"interfaces:\n  mode: bogus\n",

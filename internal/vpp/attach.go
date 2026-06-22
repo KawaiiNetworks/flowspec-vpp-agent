@@ -25,6 +25,13 @@ type ifaceInfo struct {
 // v1 owns the box (bump-in-the-wire, §16) and sets the interface ACL list
 // outright; it does not merge with pre-existing ACLs.
 func (c *Client) Attach(ctx context.Context) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	return c.attachLocked(ctx)
+}
+
+// attachLocked applies both Managed ACLs while c.opMu is held by the caller.
+func (c *Client) attachLocked(ctx context.Context) error {
 	acls := c.aclIndices()
 	if len(acls) == 0 {
 		return errors.New("no managed ACLs to attach")

@@ -10,9 +10,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -144,12 +146,14 @@ func direction(s string) vpp.Direction {
 }
 
 func splitListen(hp string) (host string, port int) {
-	i := strings.LastIndex(hp, ":")
-	if i < 0 {
+	host, portStr, err := net.SplitHostPort(hp)
+	if err != nil {
 		return hp, 10179
 	}
-	host = hp[:i]
-	fmt.Sscanf(hp[i+1:], "%d", &port)
+	port, err = strconv.Atoi(portStr)
+	if err != nil {
+		return host, 10179
+	}
 	return host, port
 }
 

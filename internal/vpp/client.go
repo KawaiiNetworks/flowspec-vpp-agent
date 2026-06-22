@@ -49,6 +49,11 @@ type Client struct {
 	// re-push desired state (§19.3).
 	OnReconnect func()
 
+	// opMu serializes full VPP ACL lifecycle transactions. Index map locking alone
+	// is not enough because create/replace and attach must not interleave with
+	// reconnect bootstrap.
+	opMu sync.Mutex
+
 	mu  sync.Mutex
 	idx map[Family]uint32
 }
@@ -122,13 +127,21 @@ func (c *Client) waitConnected(ctx context.Context, evCh chan govppcore.Connecti
 
 // bootstrap creates the (empty) Managed ACLs and attaches them to interfaces.
 func (c *Client) bootstrap(ctx context.Context) error {
-	if err := c.ReplaceACL(ctx, IPv4, nil); err != nil {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	return c.bootstrapLocked(ctx)
+}
+
+// bootstrapLocked creates the empty Managed ACLs and attaches them. c.opMu must
+// be held by the caller.
+func (c *Client) bootstrapLocked(ctx context.Context) error {
+	if err := c.replaceACLLocked(ctx, IPv4, nil); err != nil {
 		return fmt.Errorf("create ipv4 managed acl: %w", err)
 	}
-	if err := c.ReplaceACL(ctx, IPv6, nil); err != nil {
+	if err := c.replaceACLLocked(ctx, IPv6, nil); err != nil {
 		return fmt.Errorf("create ipv6 managed acl: %w", err)
 	}
-	if err := c.Attach(ctx); err != nil {
+	if err := c.attachLocked(ctx); err != nil {
 		return fmt.Errorf("attach managed acls: %w", err)
 	}
 	return nil
@@ -149,14 +162,17 @@ func (c *Client) handleEvents(ctx context.Context, evCh chan govppcore.Connectio
 			switch e.State {
 			case govppcore.Connected:
 				c.log.Warn("reconnected to VPP, re-creating managed ACLs")
+				c.opMu.Lock()
 				c.mu.Lock()
 				c.idx[IPv4] = aclIndexUnset
 				c.idx[IPv6] = aclIndexUnset
 				c.mu.Unlock()
-				if err := c.bootstrap(ctx); err != nil {
+				if err := c.bootstrapLocked(ctx); err != nil {
+					c.opMu.Unlock()
 					c.log.Error("re-bootstrap after reconnect failed", "error", err)
 					continue
 				}
+				c.opMu.Unlock()
 				if c.OnReconnect != nil {
 					c.OnReconnect()
 				}

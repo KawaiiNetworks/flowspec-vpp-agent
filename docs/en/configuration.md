@@ -10,8 +10,9 @@ deployment the host's `./config` directory is mounted read-only at
 Each section is documented below. A complete example lives in
 [../../deploy/config.example.yaml](../../deploy/config.example.yaml).
 
-> Every field has a default and may be omitted. The config is validated at
-> startup; an invalid value makes the process exit non-zero and print the reason.
+> Fields with a listed default may be omitted; required fields are called out
+> below. The config is validated at startup; an invalid value makes the process
+> exit non-zero and print the reason.
 
 ---
 
@@ -54,7 +55,7 @@ bgp:
 | Field       | Type   | Default          | Description |
 | ----------- | ------ | ---------------- | ----------- |
 | `listen`    | string | `0.0.0.0:10179`  | BGP listen `host:port`. **Defaults to 10179, not 179**, to avoid a native BGP daemon already bound to 179. Must be a valid `host:port`, port 1–65535. |
-| `router_id` | string | empty            | BGP Router ID in dotted-quad (IPv4) form. Empty lets GoBGP choose; setting it explicitly is recommended. Must be a valid IP if set. |
+| `router_id` | string | —                | BGP Router ID in dotted-quad (IPv4) form. **Required**; GoBGP rejects an empty router ID. |
 | `asn`       | uint32 | `0`              | Local AS number. |
 | `peers`     | list   | empty            | FlowSpec sessions (see below). Multiple are allowed; their rules are reference-counted into the shared Managed ACLs. |
 

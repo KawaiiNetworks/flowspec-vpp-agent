@@ -4,10 +4,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,7 +30,7 @@ type VPP struct {
 // BGP holds the embedded GoBGP speaker settings (§19).
 type BGP struct {
 	Listen   string `yaml:"listen"`    // host:port, default 0.0.0.0:10179
-	RouterID string `yaml:"router_id"` // dotted-quad BGP router id
+	RouterID string `yaml:"router_id"` // required dotted-quad BGP router id
 	ASN      uint32 `yaml:"asn"`       // local AS number
 	Peers    []Peer `yaml:"peers"`     // one session per peer (§17)
 }
@@ -105,17 +105,18 @@ func (c Config) Validate() error {
 	if c.VPP.Socket == "" {
 		return fmt.Errorf("vpp.socket must be set")
 	}
-	if err := validateHostPort(c.BGP.Listen, "bgp.listen"); err != nil {
+	if err := validateBGPListen(c.BGP.Listen); err != nil {
 		return err
 	}
-	if c.BGP.RouterID != "" {
-		addr, err := netip.ParseAddr(c.BGP.RouterID)
-		if err != nil {
-			return fmt.Errorf("bgp.router_id %q: %w", c.BGP.RouterID, err)
-		}
-		if !addr.Is4() {
-			return fmt.Errorf("bgp.router_id %q must be an IPv4 address", c.BGP.RouterID)
-		}
+	if c.BGP.RouterID == "" {
+		return fmt.Errorf("bgp.router_id must be set")
+	}
+	addr, err := netip.ParseAddr(c.BGP.RouterID)
+	if err != nil {
+		return fmt.Errorf("bgp.router_id %q: %w", c.BGP.RouterID, err)
+	}
+	if !addr.Is4() {
+		return fmt.Errorf("bgp.router_id %q must be an IPv4 address", c.BGP.RouterID)
 	}
 	for i, p := range c.BGP.Peers {
 		if _, err := netip.ParseAddr(p.Address); err != nil {
@@ -147,17 +148,36 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func validateHostPort(hp, field string) error {
-	if hp == "" {
-		return fmt.Errorf("%s must be set", field)
+func validateBGPListen(hp string) error {
+	host, _, err := splitHostPort(hp, "bgp.listen")
+	if err != nil {
+		return err
 	}
-	i := strings.LastIndex(hp, ":")
-	if i < 0 {
-		return fmt.Errorf("%s %q must be host:port", field, hp)
+	if host == "" {
+		return fmt.Errorf("bgp.listen %q must include an IP address", hp)
 	}
-	port, err := strconv.Atoi(hp[i+1:])
-	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("%s %q has invalid port", field, hp)
+	if _, err := netip.ParseAddr(host); err != nil {
+		return fmt.Errorf("bgp.listen host %q must be an IP address: %w", host, err)
 	}
 	return nil
+}
+
+func validateHostPort(hp, field string) error {
+	_, _, err := splitHostPort(hp, field)
+	return err
+}
+
+func splitHostPort(hp, field string) (host string, port int, err error) {
+	if hp == "" {
+		return "", 0, fmt.Errorf("%s must be set", field)
+	}
+	host, portStr, err := net.SplitHostPort(hp)
+	if err != nil {
+		return "", 0, fmt.Errorf("%s %q must be host:port: %w", field, hp, err)
+	}
+	port, err = strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("%s %q has invalid port", field, hp)
+	}
+	return host, port, nil
 }

@@ -9,7 +9,7 @@ agent 通过一个 YAML 配置文件启动，默认路径为
 下面按段落逐项说明。完整示例见
 [../../deploy/config.example.yaml](../../deploy/config.example.yaml)。
 
-> 所有字段都有默认值，缺省即采用默认。配置在启动时会做校验，非法值会让进程以非零码退出并打印原因。
+> 标明默认值的字段可省略；必填字段会在下文明确标出。配置在启动时会做校验，非法值会让进程以非零码退出并打印原因。
 
 ---
 
@@ -50,7 +50,7 @@ bgp:
 | 字段        | 类型   | 默认值            | 说明 |
 | ----------- | ------ | ----------------- | ---- |
 | `listen`    | string | `0.0.0.0:10179`   | BGP 监听 `host:port`。**默认 10179 而非 179**，避开宿主机上常驻的原生 BGP 守护程序。必须是合法 `host:port`，端口 1–65535。 |
-| `router_id` | string | 空                | BGP Router ID，点分四段（IPv4 形式）。留空则由 GoBGP 自行决定；建议显式配置。填写时必须是合法 IP 地址。 |
+| `router_id` | string | —                 | BGP Router ID，点分四段（IPv4 形式）。**必填**；GoBGP 会拒绝空 Router ID。 |
 | `asn`       | uint32 | `0`               | 本地 AS 号。 |
 | `peers`     | list   | 空                | FlowSpec 会话列表，见下。可配置多个，规则会按引用计数合并进同一组 Managed ACL。 |
 

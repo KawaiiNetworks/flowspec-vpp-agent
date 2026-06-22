@@ -14,6 +14,13 @@ import (
 // the ACL (acl_index = ~0) and remembers the index VPP assigns; later calls
 // replace its rule set in place.
 func (c *Client) ReplaceACL(ctx context.Context, family Family, rules []ACLRule) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	return c.replaceACLLocked(ctx, family, rules)
+}
+
+// replaceACLLocked performs ReplaceACL while c.opMu is held by the caller.
+func (c *Client) replaceACLLocked(ctx context.Context, family Family, rules []ACLRule) error {
 	binRules, err := buildACLRules(family, rules)
 	if err != nil {
 		return err
@@ -57,6 +64,7 @@ func (c *Client) ReplaceACL(ctx context.Context, family Family, rules []ACLRule)
 //   - all non-matching (legitimate) traffic of the family would be dropped, and
 //   - because ACL rules are tagged per address family, a family with no rules
 //     (e.g. an empty IPv6 ACL) would deny ALL of that family's traffic.
+//
 // With permit-any last, the ACL behaves as a blocklist ("drop these, permit the
 // rest"), which is FlowSpec's intent. permit-any must remain the final entry; the
 // deny rules above it are mutually order-independent (§17).
