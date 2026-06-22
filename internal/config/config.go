@@ -112,8 +112,12 @@ func (c Config) Validate() error {
 		return err
 	}
 	if c.BGP.RouterID != "" {
-		if _, err := netip.ParseAddr(c.BGP.RouterID); err != nil {
+		addr, err := netip.ParseAddr(c.BGP.RouterID)
+		if err != nil {
 			return fmt.Errorf("bgp.router_id %q: %w", c.BGP.RouterID, err)
+		}
+		if !addr.Is4() {
+			return fmt.Errorf("bgp.router_id %q must be an IPv4 address", c.BGP.RouterID)
 		}
 	}
 	for i, p := range c.BGP.Peers {

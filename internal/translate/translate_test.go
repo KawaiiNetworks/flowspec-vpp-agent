@@ -244,6 +244,23 @@ func TestTranslate_PortInequalities(t *testing.T) {
 	}
 }
 
+func TestTranslate_NumericTrueFalse(t *testing.T) {
+	r := flowspec.Rule{Family: flowspec.FamilyIPv4, Action: drop(),
+		Match: flowspec.Match{Proto: eq(6), DstPort: []flowspec.NumericOp{{}}}}
+	got, err := Translate(r)
+	if err != nil {
+		t.Fatalf("numeric true should translate: %v", err)
+	}
+	if got.DstPortOrICMPCodeFirst != 0 || got.DstPortOrICMPCodeLast != portMax {
+		t.Fatalf("numeric true port range = %d-%d, want 0-%d",
+			got.DstPortOrICMPCodeFirst, got.DstPortOrICMPCodeLast, portMax)
+	}
+
+	r.Match.DstPort = []flowspec.NumericOp{{LT: true, GT: true, EQ: true}}
+	_, err = Translate(r)
+	assertReason(t, err, ReasonUnsupportedExpression)
+}
+
 func TestTranslate_Unsupported(t *testing.T) {
 	base := func(m flowspec.Match) flowspec.Rule {
 		return flowspec.Rule{Family: flowspec.FamilyIPv4, Action: drop(), Match: m}

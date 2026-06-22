@@ -145,6 +145,35 @@ func TestMultiSession_PartialWithdraw(t *testing.T) {
 	}
 }
 
+func TestSameSession_EquivalentRoutesKeepRefcount(t *testing.T) {
+	fb := newFake()
+	m := New(fb, nil, nil)
+	ctx := context.Background()
+
+	implicitSrc := v4UDPRule(t, "203.0.113.10/32", 443)
+	implicitSrc.Raw = "route with implicit source"
+	explicitSrc := v4UDPRule(t, "203.0.113.10/32", 443)
+	explicitSrc.Raw = "route with explicit any source"
+	explicitSrc.Match.HasSrc = true
+	explicitSrc.Match.Src = pfx(t, "0.0.0.0/0")
+
+	m.Apply(ctx, ann("s1", "10.0.0.1", implicitSrc))
+	m.Apply(ctx, ann("s1", "10.0.0.1", explicitSrc))
+	if got := fb.count(vpp.IPv4); got != 1 {
+		t.Fatalf("equivalent routes should dedup to 1 entry, got %d", got)
+	}
+
+	m.Apply(ctx, wd("s1", "10.0.0.1", implicitSrc))
+	if got := fb.count(vpp.IPv4); got != 1 {
+		t.Fatalf("withdrawing one equivalent route removed ACL entry; got %d, want 1", got)
+	}
+
+	m.Apply(ctx, wd("s1", "10.0.0.1", explicitSrc))
+	if got := fb.count(vpp.IPv4); got != 0 {
+		t.Fatalf("after final equivalent withdraw: %d entries, want 0", got)
+	}
+}
+
 // §15: session disconnect == withdraw all of that session's rules.
 func TestSessionDown_WithdrawsAll(t *testing.T) {
 	fb := newFake()

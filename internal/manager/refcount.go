@@ -15,12 +15,12 @@ func (m *Manager) addOwner(key string, acl vpp.ACLRule, fam vpp.Family, session 
 	e, ok := m.entries[key]
 	created := false
 	if !ok {
-		e = &entry{acl: acl, family: fam, owners: make(map[bgp.SessionID]struct{})}
+		e = &entry{acl: acl, family: fam, owners: make(map[bgp.SessionID]int)}
 		m.entries[key] = e
 		created = true
 	}
 	wasEmpty := len(e.owners) == 0
-	e.owners[session] = struct{}{}
+	e.owners[session]++
 
 	sr := m.sessionRules[session]
 	if sr == nil {
@@ -33,7 +33,7 @@ func (m *Manager) addOwner(key string, acl vpp.ACLRule, fam vpp.Family, session 
 	return created || wasEmpty
 }
 
-// removeOwner drops session from the entry's owner set. It returns true when the
+// removeOwner drops one route ownership from session. It returns true when the
 // entry became ownerless and was deleted — meaning the VPP ACL entry must be
 // removed and the family reconciled (§17: delete only when the last holder
 // withdraws).
@@ -42,16 +42,41 @@ func (m *Manager) removeOwner(key string, session bgp.SessionID) bool {
 	if !ok {
 		return false
 	}
-	if _, held := e.owners[session]; !held {
+	n := e.owners[session]
+	if n == 0 {
+		return false
+	}
+	if n == 1 {
+		delete(e.owners, session)
+	} else {
+		e.owners[session] = n - 1
+	}
+	if sr := m.sessionRules[session]; sr != nil {
+		if e.owners[session] == 0 {
+			delete(sr, key)
+			if len(sr) == 0 {
+				delete(m.sessionRules, session)
+			}
+		}
+	}
+	if len(e.owners) == 0 {
+		delete(m.entries, key)
+		return true
+	}
+	return false
+}
+
+// removeSessionOwner removes all route ownerships for session/key. It is used
+// when a session goes down and all its routes are withdrawn at once.
+func (m *Manager) removeSessionOwner(key string, session bgp.SessionID) bool {
+	e, ok := m.entries[key]
+	if !ok {
+		return false
+	}
+	if e.owners[session] == 0 {
 		return false
 	}
 	delete(e.owners, session)
-	if sr := m.sessionRules[session]; sr != nil {
-		delete(sr, key)
-		if len(sr) == 0 {
-			delete(m.sessionRules, session)
-		}
-	}
 	if len(e.owners) == 0 {
 		delete(m.entries, key)
 		return true

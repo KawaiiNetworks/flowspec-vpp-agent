@@ -32,6 +32,7 @@ bgp:
 func TestValidate_Errors(t *testing.T) {
 	cases := []string{
 		"bgp:\n  listen: nonsense\n",
+		"bgp:\n  router_id: 2001:db8::1\n",
 		"interfaces:\n  mode: bogus\n",
 		"interfaces:\n  mode: list\n", // list mode without list
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",

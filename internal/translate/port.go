@@ -73,14 +73,19 @@ func reduceRange(ops []flowspec.NumericOp, max uint64, what string) (lo, hi uint
 // of intervals over [0, max].
 func opToSet(op flowspec.NumericOp, max uint64) ([]interval, error) {
 	v := op.Value
+	switch {
+	case !op.LT && !op.GT && !op.EQ:
+		// Numeric "true": matches the whole operand domain.
+		return []interval{{0, max}}, nil
+	case op.LT && op.GT && op.EQ:
+		// Numeric "false": matches no values.
+		return nil, nil
+	}
 	if v > max {
 		return nil, unsupported(ReasonUnsupportedExpression,
 			fmt.Sprintf("numeric operand %d out of range 0-%d", v, max))
 	}
 	switch {
-	case !op.LT && !op.GT && !op.EQ:
-		// No comparison bits set is not a meaningful match for v1.
-		return nil, unsupported(ReasonUnsupportedExpression, "numeric op with no comparison")
 	case op.EQ && !op.LT && !op.GT: // ==
 		return []interval{{v, v}}, nil
 	case op.GT && !op.EQ && !op.LT: // >
@@ -106,8 +111,8 @@ func opToSet(op flowspec.NumericOp, max uint64) ([]interval, error) {
 			out = append(out, interval{v + 1, max})
 		}
 		return out, nil
-	default: // all three bits set — matches everything; degenerate
-		return []interval{{0, max}}, nil
+	default:
+		return nil, unsupported(ReasonUnsupportedExpression, "unknown numeric op")
 	}
 }
 

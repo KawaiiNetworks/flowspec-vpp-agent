@@ -30,12 +30,14 @@ func (nopMetrics) RuleApplied(string, string)         {}
 func (nopMetrics) RuleIgnored(string, string, string) {}
 func (nopMetrics) SetACLEntries(string, int)          {}
 
-// entry is one desired VPP ACL rule plus the set of sessions that currently
-// advertise it. The rule exists in VPP iff owners is non-empty (§17).
+// entry is one desired VPP ACL rule plus the sessions that currently advertise
+// it. The per-session count matters because one peer can announce multiple
+// distinct NLRIs that collapse to the same VPP ACL rule. The rule exists in VPP
+// iff owners is non-empty (§17).
 type entry struct {
 	acl    vpp.ACLRule
 	family vpp.Family
-	owners map[bgp.SessionID]struct{}
+	owners map[bgp.SessionID]int
 }
 
 // Manager holds the reference-count table and drives reconciliation.
@@ -134,6 +136,9 @@ func (m *Manager) announce(ctx context.Context, u bgp.Update) {
 	key := acl.Key()
 	fam := familyOf(acl)
 
+	if oldKey, ok := m.routeKey(routeID, u.Session); ok && oldKey == key {
+		return
+	}
 	if oldFam, dirty := m.replaceRoute(routeID, key, u.Session); dirty {
 		dirtyFams[oldFam] = struct{}{}
 	}
@@ -154,20 +159,7 @@ func (m *Manager) withdraw(ctx context.Context, u bgp.Update) {
 	if u.Rule == nil {
 		return
 	}
-	r := *u.Rule
-	// A withdrawn path carries no action attributes; force a drop action so the
-	// match translates to the same key the announce produced.
-	r.Action = flowspec.Action{Kind: flowspec.ActionDrop, Desc: "withdraw"}
-	acl, err := translate.Translate(r)
-	if err != nil {
-		// We never created an entry for an unsupported rule, so withdrawing it is
-		// a no-op.
-		return
-	}
-	key := acl.Key()
-	fam := familyOf(acl)
-	m.forgetRoute(routeIdentity(r), u.Session, key)
-	if m.removeOwner(key, u.Session) {
+	if fam, dirty := m.removeRoute(routeIdentity(*u.Rule), u.Session); dirty {
 		m.reconcile(ctx, fam)
 	}
 }
@@ -181,8 +173,9 @@ func (m *Manager) sessionDown(ctx context.Context, u bgp.Update) {
 	dirty := map[vpp.Family]struct{}{}
 	for key := range keys {
 		if e, ok := m.entries[key]; ok {
-			if m.removeOwner(key, u.Session) {
-				dirty[e.family] = struct{}{}
+			fam := e.family
+			if m.removeSessionOwner(key, u.Session) {
+				dirty[fam] = struct{}{}
 			}
 		}
 	}
