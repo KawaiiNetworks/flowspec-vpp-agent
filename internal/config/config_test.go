@@ -55,7 +55,7 @@ local_detector:
   enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
-    - udp-small-flood
+    - dns-reflection
     - ssh-scan
   sflow:
     listen: "127.0.0.1:6343"
@@ -74,7 +74,7 @@ local_detector:
 	if cfg.Local.VPPStats.Interval.Duration().String() != "2s" {
 		t.Fatalf("stats interval = %s, want 2s", cfg.Local.VPPStats.Interval.Duration())
 	}
-	if len(cfg.Local.RulesEnabled) != 2 || cfg.Local.RulesEnabled[0] != "udp-small-flood" {
+	if len(cfg.Local.RulesEnabled) != 2 || cfg.Local.RulesEnabled[0] != "dns-reflection" {
 		t.Fatalf("rules_enabled = %v", cfg.Local.RulesEnabled)
 	}
 	if cfg.Local.RulesDir != "/etc/flowspec-vpp-agent/rules" {

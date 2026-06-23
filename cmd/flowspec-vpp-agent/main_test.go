@@ -36,12 +36,34 @@ func TestSplitListen_IPv6(t *testing.T) {
 }
 
 func TestCompileLocalRulesBuiltin(t *testing.T) {
-	rules, err := compileLocalRules(config.Local{RulesEnabled: []string{"udp-small-flood"}})
+	rules, err := compileLocalRules(config.Local{RulesEnabled: []string{"udp-flood-ipv4"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 1 || rules[0].Name() != "udp-small-flood" {
+	if len(rules) != 1 || rules[0].Name() != "udp-flood-ipv4" {
 		t.Fatalf("rules = %+v", rules)
+	}
+}
+
+// Every embedded rule must compile, so a broken built-in fails the build/test.
+func TestAllBuiltinRulesCompile(t *testing.T) {
+	defs, err := loadEmbeddedRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) == 0 {
+		t.Fatal("no embedded rules found")
+	}
+	names := make([]string, 0, len(defs))
+	for name := range defs {
+		names = append(names, name)
+	}
+	rules, err := compileLocalRules(config.Local{RulesEnabled: names})
+	if err != nil {
+		t.Fatalf("compiling all %d built-in rules: %v", len(names), err)
+	}
+	if len(rules) != len(names) {
+		t.Fatalf("compiled %d rules, want %d", len(rules), len(names))
 	}
 }
 

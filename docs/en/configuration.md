@@ -129,9 +129,10 @@ local_detector:
   enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
-    - udp-small-flood
+    - dns-reflection
+    - udp-flood-ipv4
+    - syn-flood-ipv4
     - ssh-scan-ipv4
-    - ssh-scan-ipv6
   sflow:
     listen: "0.0.0.0:6343"
   sample_queue: 65536
@@ -182,7 +183,7 @@ rules:
       fine:  { resolution: 1s, duration: 10m }
       medium:  { resolution: 1m, duration: 1d }
       coarse: { resolution: 1h, duration: 7d }
-      max_instances: 200
+      max_instances: 20
     trigger:
       terms:
         short: { metric: pps, window: 10s }
@@ -211,6 +212,13 @@ addresses); `src_port`/`dst_port` are a value or list; `packet_len` takes
 `lt`/`lte`/`gt`/`gte`. `packet_len` is filter-only — FlowSpec cannot carry it, so
 it never enters the identity or the emitted rule.
 
+`tcp_flags` filters on the TCP flags byte: a space/comma list of flag names, each
+optionally prefixed with `!` for "must be clear" — e.g. `"syn !ack"` for a SYN
+flood. It requires `match.proto: tcp`. It is filter-only for identity, but by
+default it is also carried into the emitted FlowSpec, so the drop targets only the
+matching flags (e.g. SYN), sparing established connections. Override emission with
+`flowspec.tcp_flags` (`all` to emit no flag constraint, or an explicit spec).
+
 #### aggregate — the instance identity
 
 Every matched packet carries concrete values for all fields. Those values form a
@@ -233,10 +241,13 @@ to copy it). `"N"` is a floor bucket of width N: with `"100"`, port 101 maps to
 the range **100–199** (buckets are 0–99, 100–199, …; the inclusive top is N−1, not
 N). `all` collapses every port to the wildcard 0–65535.
 
-Because a FlowSpec port range needs a concrete tcp/udp protocol, a non-wildcard
-port requires `match.proto` to be tcp and/or udp and `aggregate.proto` not be
-`all`; otherwise compilation fails (aggregate the ports to `all` for non-TCP/UDP
-rules).
+Ports only exist for TCP/UDP. A packet with no ports (ICMP, etc.) — or any packet
+when `aggregate.proto` is `all` — is treated as "ports not applicable": the port
+fields become wildcard, so they neither split the identity nor appear in the
+emitted rule. So you don't need to set ports to `all` on an ICMP rule; just omit
+them. The only compile-time restriction is that a non-wildcard port aggregate
+cannot be combined with `aggregate.proto: all` (a FlowSpec port range needs a
+concrete protocol).
 
 #### history — the per-instance rings
 

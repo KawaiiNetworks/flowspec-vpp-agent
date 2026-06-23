@@ -1,0 +1,37 @@
+# Predefined: direct UDP flood (often spoofed sources, small packets, high pps)
+# aimed at a victim. Identity is the VICTIM (dst); sources are random/spoofed and
+# must be collapsed. Triggers on packets/sec and drops all UDP to the victim.
+#
+# Note: this sheds legitimate UDP to the victim too — the standard volumetric
+# tradeoff. If the attack targets a known port, narrow it with match.dst_port and
+# aggregate dst_port to exact so only that port is dropped.
+rules:
+  - name: udp-flood-ipv4
+    match: { family: ipv4, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 500000"   # 500 kpps of UDP to one victim
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "udp flood to {{dst}}, pps={{pps}}"
+
+  - name: udp-flood-ipv6
+    match: { family: ipv6, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 500000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "udp flood to {{dst}}, pps={{pps}}"

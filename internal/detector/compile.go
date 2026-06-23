@@ -113,6 +113,14 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 	}
 	r.packetLen = cfg.Match.PacketLen
 
+	// --- match: tcp flags filter ---
+	if cfg.Match.TCPFlags != "" {
+		r.tcpCare, r.tcpWant, err = parseTCPFlags(cfg.Match.TCPFlags)
+		if err != nil {
+			return nil, fmt.Errorf("match.tcp_flags: %w", err)
+		}
+	}
+
 	// --- aggregate: granularity of each descriptor field ---
 	r.protoWild, err = aggProto(cfg.Aggregate.Proto)
 	if err != nil {
@@ -135,17 +143,12 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 		return nil, fmt.Errorf("aggregate.dst_port: %w", err)
 	}
 
-	// Ports are emitted into the FlowSpec rule unless aggregated to "all", and
-	// translate can only express a port range under a concrete tcp/udp protocol.
-	// So a non-wildcard port requires a concrete tcp/udp proto in the emitted
-	// rule: proto must be filtered to tcp/udp and not aggregated to "all".
-	if !r.srcPortAgg.wildcard() || !r.dstPortAgg.wildcard() {
-		if r.protoWild {
-			return nil, fmt.Errorf("src_port/dst_port cannot be emitted when aggregate.proto is \"all\" (set the ports to \"all\" too)")
-		}
-		if !r.protoOnlyTCPUDP() {
-			return nil, fmt.Errorf("src_port/dst_port require match.proto to be tcp and/or udp (or aggregate the ports to \"all\")")
-		}
+	// A FlowSpec port range needs a concrete protocol, so non-wildcard ports
+	// cannot be combined with a wildcarded protocol. (Ports for non-TCP/UDP
+	// packets are handled at runtime: they are treated as not-applicable and never
+	// emitted, so no per-rule proto restriction is needed here.)
+	if (!r.srcPortAgg.wildcard() || !r.dstPortAgg.wildcard()) && r.protoWild {
+		return nil, fmt.Errorf("non-wildcard src_port/dst_port cannot be combined with aggregate.proto: all")
 	}
 
 	// --- history ---
@@ -179,6 +182,16 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 		return nil, err
 	}
 	r.action = action
+	r.tcpEmit, err = compileTCPEmit(cfg.FlowSpec.TCPFlags)
+	if err != nil {
+		return nil, fmt.Errorf("flowspec.tcp_flags: %w", err)
+	}
+	// tcp-flags (matched or emitted) only makes sense for TCP.
+	if r.tcpCare != 0 || r.tcpEmit.mode == emitTemplate {
+		if !r.protoOnlyTCP() {
+			return nil, fmt.Errorf("tcp_flags requires match.proto to be tcp")
+		}
+	}
 	r.emitInterval = action.ttl / 2
 	if r.emitInterval < hist.fineResolution {
 		r.emitInterval = hist.fineResolution
@@ -200,18 +213,60 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 	return r, nil
 }
 
-// protoOnlyTCPUDP reports whether the proto filter is non-empty and limited to
-// tcp/udp (a precondition for emitting ports).
-func (r *Rule) protoOnlyTCPUDP() bool {
-	if len(r.protoFilter) == 0 {
-		return false
-	}
+// protoOnlyTCP reports whether the proto filter is exactly {tcp}.
+func (r *Rule) protoOnlyTCP() bool {
 	for _, p := range r.protoFilter {
-		if p != protoTCP && p != protoUDP {
+		if p != protoTCP {
 			return false
 		}
 	}
-	return true
+	return len(r.protoFilter) > 0
+}
+
+var tcpFlagBits = map[string]uint8{
+	"fin": tcpFIN, "syn": tcpSYN, "rst": tcpRST, "psh": tcpPSH,
+	"ack": tcpACK, "urg": tcpURG, "ece": tcpECE, "cwr": tcpCWR,
+}
+
+// parseTCPFlags parses a spec like "syn !ack" into a (care, want) pair where a
+// packet matches when (flags & care) == want. Tokens are space/comma separated;
+// a leading "!" requires the flag to be clear.
+func parseTCPFlags(s string) (care, want uint8, err error) {
+	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == ',' })
+	for _, tok := range fields {
+		neg := strings.HasPrefix(tok, "!")
+		name := strings.ToLower(strings.TrimPrefix(tok, "!"))
+		bit, ok := tcpFlagBits[name]
+		if !ok {
+			return 0, 0, fmt.Errorf("unknown tcp flag %q", tok)
+		}
+		care |= bit
+		if !neg {
+			want |= bit
+		}
+	}
+	if care == 0 {
+		return 0, 0, fmt.Errorf("no flags specified")
+	}
+	return care, want, nil
+}
+
+// compileTCPEmit parses flowspec.tcp_flags: "" mirrors the match filter,
+// "all"/"any" emits nothing, otherwise an explicit spec.
+func compileTCPEmit(s string) (tcpEmitSpec, error) {
+	t := strings.TrimSpace(s)
+	switch {
+	case t == "":
+		return tcpEmitSpec{mode: emitDefault}, nil
+	case strings.EqualFold(t, "all"), strings.EqualFold(t, "any"):
+		return tcpEmitSpec{mode: emitWildcard}, nil
+	default:
+		care, want, err := parseTCPFlags(t)
+		if err != nil {
+			return tcpEmitSpec{}, err
+		}
+		return tcpEmitSpec{mode: emitTemplate, care: care, want: want}, nil
+	}
 }
 
 // descriptorVars is the set of variables every rule produces. Each matched

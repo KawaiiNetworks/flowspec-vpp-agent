@@ -1,0 +1,113 @@
+# Predefined: UDP reflection/amplification. A reflector answers a spoofed request
+# with a large response aimed at the victim, so on the wire we see
+# `udp, src_port = <service port>, dst = victim`. Identity is the VICTIM (dst);
+# the source (reflector) is irrelevant and varies. Trigger on bits/sec (the
+# defining trait of amplification is volume), and emit a precise drop of
+# "udp src_port <service> -> victim" so only the attack vector is shed.
+#
+# bps thresholds are per-victim and sampled; tune to your link sizes.
+rules:
+  - name: dns-reflection
+    match: { family: ipv4, proto: udp, src_port: 53 }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        rate: { metric: bps, window: 10s }
+      expr: "rate > 100000000"   # 100 Mbps to one victim from udp/53
+      sustained: 10s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "dns reflection to {{dst}}, bps={{rate}}"
+
+  - name: ntp-reflection
+    match: { family: ipv4, proto: udp, src_port: 123 }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        rate: { metric: bps, window: 10s }
+      expr: "rate > 100000000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "ntp reflection to {{dst}}, bps={{rate}}"
+
+  - name: memcached-reflection
+    match: { family: ipv4, proto: udp, src_port: 11211 }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        rate: { metric: bps, window: 10s }
+      expr: "rate > 50000000"    # memcached amplifies enormously; lower floor
+      sustained: 10s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "memcached reflection to {{dst}}, bps={{rate}}"
+
+  - name: ssdp-reflection
+    match: { family: ipv4, proto: udp, src_port: 1900 }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        rate: { metric: bps, window: 10s }
+      expr: "rate > 100000000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "ssdp reflection to {{dst}}, bps={{rate}}"
+
+  - name: cldap-reflection
+    match: { family: ipv4, proto: udp, src_port: 389 }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        rate: { metric: bps, window: 10s }
+      expr: "rate > 100000000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "cldap reflection to {{dst}}, bps={{rate}}"
+
+  - name: snmp-reflection
+    match: { family: ipv4, proto: udp, src_port: 161 }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        rate: { metric: bps, window: 10s }
+      expr: "rate > 100000000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "snmp reflection to {{dst}}, bps={{rate}}"
+
+  - name: chargen-reflection
+    match: { family: ipv4, proto: udp, src_port: 19 }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1d }
+      max_instances: 20
+    trigger:
+      terms:
+        rate: { metric: bps, window: 10s }
+      expr: "rate > 50000000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "chargen reflection to {{dst}}, bps={{rate}}"

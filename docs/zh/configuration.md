@@ -119,9 +119,10 @@ local_detector:
   enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
-    - udp-small-flood
+    - dns-reflection
+    - udp-flood-ipv4
+    - syn-flood-ipv4
     - ssh-scan-ipv4
-    - ssh-scan-ipv6
   sflow:
     listen: "0.0.0.0:6343"
   sample_queue: 65536
@@ -170,7 +171,7 @@ rules:
       fine:  { resolution: 1s, duration: 10m }
       medium:  { resolution: 1m, duration: 1d }
       coarse: { resolution: 1h, duration: 7d }
-      max_instances: 200
+      max_instances: 20
     trigger:
       terms:
         short: { metric: pps, window: 10s }
@@ -197,6 +198,11 @@ rules:
 `src_port`/`dst_port` 为单值或列表；`packet_len` 支持 `lt`/`lte`/`gt`/`gte`。`packet_len`
 仅用于过滤——FlowSpec 无法承载，因此它绝不进入身份或下发规则。
 
+`tcp_flags` 过滤 TCP 标志字节：空格/逗号分隔的标志名,前缀 `!` 表示"必须为 0"——如 SYN flood
+写 `"syn !ack"`。它要求 `match.proto: tcp`。对身份而言仅是过滤,但默认也会带进下发的 FlowSpec,
+使丢弃只针对匹配的标志（如 SYN）,从而保留已建立的连接。可用 `flowspec.tcp_flags` 覆盖下发
+（`all` = 不下发标志约束,或写明确的标志）。
+
 #### aggregate —— 实例身份
 
 每个命中包都带着所有字段的具体值。这些值组成一个可比较的*描述符*；**描述符相同即同一实例**，
@@ -215,8 +221,10 @@ rules:
 **100–199**（分桶为 0–99、100–199……，上界是 N−1 而非 N）；`all` 把所有端口聚合为通配
 0–65535。
 
-由于 FlowSpec 端口范围需要具体的 tcp/udp 协议,非通配端口要求 `match.proto` 为 tcp 和/或 udp
-且 `aggregate.proto` 不为 `all`,否则编译失败（非 TCP/UDP 规则请把端口聚合为 `all`）。
+端口只对 TCP/UDP 存在。没有端口的包(ICMP 等),或 `aggregate.proto` 为 `all` 时的任何包,
+都按"端口不适用"处理:端口字段变为通配,既不参与身份、也不下发。所以 ICMP 规则**不需要**把端口
+写成 `all`,直接省略即可。编译期唯一的限制是:非通配端口不能和 `aggregate.proto: all` 同时用
+(FlowSpec 端口范围需要具体协议)。
 
 #### history —— 每实例的环形缓冲
 

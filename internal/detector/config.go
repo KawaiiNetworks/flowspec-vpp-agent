@@ -41,6 +41,9 @@ type MatchConfig struct {
 	SrcPort   IntList     `yaml:"src_port"`
 	DstPort   IntList     `yaml:"dst_port"`
 	PacketLen CompareUint `yaml:"packet_len"`
+	// TCPFlags filters on the TCP flags byte, e.g. "syn !ack". Filter-only for
+	// identity, but it may be carried into the emitted FlowSpec (see FlowSpecConfig).
+	TCPFlags string `yaml:"tcp_flags"`
 }
 
 // AggregateConfig declares per-field granularity applied to the matched packet's
@@ -111,6 +114,9 @@ type FlowSpecConfig struct {
 	DstPrefix string   `yaml:"dst_prefix"`
 	SrcPort   string   `yaml:"src_port"`
 	DstPort   string   `yaml:"dst_port"`
+	// TCPFlags: "" defaults to the match filter; "all"/"any" emits no flag
+	// constraint; otherwise an explicit spec like "syn !ack".
+	TCPFlags string `yaml:"tcp_flags"`
 }
 
 // StringList accepts either a scalar string or a sequence of strings in YAML.

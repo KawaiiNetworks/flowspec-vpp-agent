@@ -385,12 +385,92 @@ rules:
 	}
 }
 
-func TestCompile_RejectsPortsWithoutTCPUDP(t *testing.T) {
+// A SYN-flood rule counts only SYN-without-ACK packets and emits a drop that
+// carries the same tcp-flags constraint (so established connections survive).
+func TestEngine_SynFloodFlagsFilterAndEmit(t *testing.T) {
+	cfg := `
+rules:
+  - name: syn-flood
+    match: { family: ipv4, proto: tcp, tcp_flags: "syn !ack" }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    history:
+      fine: { resolution: 1s, duration: 10s }
+      max_instances: 20
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 0"
+    flowspec: { action: drop, ttl: 60s }
+    description: "syn flood to {{dst}}"
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(8000, 0)
+	syn := Sample{At: now, Family: flowspec.FamilyIPv4, Src: netip.MustParseAddr("198.51.100.1"),
+		Dst: netip.MustParseAddr("203.0.113.5"), Proto: protoTCP, TCPFlags: tcpSYN, SampleRate: 1}
+	ackOnly := syn
+	ackOnly.Src = netip.MustParseAddr("198.51.100.2")
+	ackOnly.TCPFlags = tcpACK // established traffic: must be ignored
+	engine.Observe(syn)
+	engine.Observe(ackOnly)
+
+	events := engine.Tick(now, EvalContext{})
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1 (only SYN counted)", len(events))
+	}
+	fl := events[0].Rule.Match.TCPFlags
+	// Expect SYN required-set and ACK required-clear.
+	if len(fl) != 2 || !fl[0].Match || fl[0].Value != uint64(tcpSYN) || !fl[1].Not || fl[1].Value != uint64(tcpACK) {
+		t.Fatalf("tcp flag ops = %+v, want syn-set + ack-clear", fl)
+	}
+}
+
+// Ports do not apply to non-TCP/UDP packets: an ICMP rule with a port aggregate
+// compiles, and the emitted rule carries no port constraint.
+func TestEngine_PortsIgnoredForNonTCPUDP(t *testing.T) {
+	cfg := `
+rules:
+  - name: icmp-rule
+    match: { family: ipv4, proto: icmp }
+    aggregate: { src: "/0", dst: "/32", dst_port: "100" }
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 10 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 0"
+    flowspec: { action: drop, ttl: 10s }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatalf("icmp rule with a port aggregate should compile: %v", err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(9000, 0)
+	engine.Observe(Sample{At: now, Family: flowspec.FamilyIPv4,
+		Src: netip.MustParseAddr("198.51.100.1"), Dst: netip.MustParseAddr("203.0.113.5"),
+		Proto: protoICMP, SampleRate: 1})
+	events := engine.Tick(now, EvalContext{})
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	m := events[0].Rule.Match
+	if len(m.SrcPort) != 0 || len(m.DstPort) != 0 {
+		t.Fatalf("icmp rule emitted ports: sport=%v dport=%v", m.SrcPort, m.DstPort)
+	}
+	if len(m.Proto) != 1 || m.Proto[0].Value != protoICMP {
+		t.Fatalf("proto = %+v, want icmp", m.Proto)
+	}
+}
+
+func TestCompile_RejectsPortsWithProtoAll(t *testing.T) {
 	cfg := `
 rules:
   - name: bad
-    match: { family: ipv4, proto: icmp }
-    aggregate: { src: "/32", dst_port: "100" }
+    match: { family: ipv4, proto: tcp }
+    aggregate: { src: "/32", proto: all, dst_port: "100" }
     history: { fine: { resolution: 1s, duration: 10s }, max_instances: 10 }
     trigger:
       terms:
@@ -399,7 +479,7 @@ rules:
     flowspec: { action: drop, ttl: 10s }
 `
 	if _, err := CompileConfig([]byte(cfg)); err == nil {
-		t.Fatal("expected compile error: ports require tcp/udp")
+		t.Fatal("expected compile error: ports with proto: all")
 	}
 }
 

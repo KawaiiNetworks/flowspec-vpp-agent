@@ -48,10 +48,17 @@ local_detector:
   # (user files override built-ins of the same name). rules_enabled selects which
   # rules — by name — are actually activated.
   rules_dir: /etc/flowspec-vpp-agent/rules
+  # Built-in rules (see rules/): reflection (dns/ntp/memcached/ssdp/cldap/snmp/
+  # chargen), udp-flood-ipv4/6, syn-flood-ipv4/6, icmp-flood-ipv4/icmpv6-flood,
+  # ssh-scan-ipv4/6. Enable the ones you want by name:
   rules_enabled:
-    - udp-small-flood
+    - dns-reflection
+    - ntp-reflection
+    - memcached-reflection
+    - udp-flood-ipv4
+    - syn-flood-ipv4
+    - icmp-flood-ipv4
     - ssh-scan-ipv4
-    - ssh-scan-ipv6
 
 # A rule file (predefined or under rules_dir) contains one or more rules. match
 # filters which packets count; aggregate sets the granularity of each identity
@@ -74,7 +81,7 @@ local_detector:
 #       fine:  { resolution: 1s, duration: 10m }
 #       medium:  { resolution: 1m, duration: 1d }
 #       coarse: { resolution: 1h, duration: 7d }
-#       max_instances: 200
+#       max_instances: 20
 #     trigger:
 #       terms:                    # named windowed aggregates (metric/window/offset/agg)
 #         short: { metric: pps, window: 10s }                # from the 1s fine ring

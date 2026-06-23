@@ -26,6 +26,8 @@ type Rule struct {
 	srcPortFilter []uint16
 	dstPortFilter []uint16
 	packetLen     CompareUint
+	tcpCare       uint8 // match filter: bits we test (0 = no tcp-flags filter)
+	tcpWant       uint8 // match filter: required bit values within tcpCare
 
 	// descriptor granularity (aggregate). Every field is always part of the
 	// identity; these control its resolution. *MaskBits: -1 = full host, 0 = all.
@@ -42,6 +44,7 @@ type Rule struct {
 
 	// emission
 	action       flowSpecAction
+	tcpEmit      tcpEmitSpec
 	emitInterval time.Duration
 
 	history historySpec
@@ -108,6 +111,9 @@ func (r *Rule) matches(s Sample) bool {
 	if len(r.dstPortFilter) > 0 && !containsU16(r.dstPortFilter, s.DstPort) {
 		return false
 	}
+	if r.tcpCare != 0 && s.TCPFlags&r.tcpCare != r.tcpWant {
+		return false
+	}
 	pl := uint64(s.PacketLen)
 	if r.packetLen.LT != 0 && pl >= r.packetLen.LT {
 		return false
@@ -134,8 +140,17 @@ func (r *Rule) descriptorFor(s Sample) descriptor {
 	}
 	d.src = maskAddr(s.Src, r.srcMaskBits)
 	d.dst = maskAddr(s.Dst, r.dstMaskBits)
-	d.srcPortLo, d.srcPortHi = r.srcPortAgg.reduce(s.SrcPort)
-	d.dstPortLo, d.dstPortHi = r.dstPortAgg.reduce(s.DstPort)
+	// Ports only exist for TCP/UDP, and can only be emitted under a concrete
+	// tcp/udp protocol. For any other packet (or when proto is wildcarded) ports
+	// are "not applicable": wildcard, so they neither split the identity nor get
+	// emitted. This lets e.g. an ICMP rule ignore ports without boilerplate.
+	if !r.protoWild && (s.Proto == protoTCP || s.Proto == protoUDP) {
+		d.srcPortLo, d.srcPortHi = r.srcPortAgg.reduce(s.SrcPort)
+		d.dstPortLo, d.dstPortHi = r.dstPortAgg.reduce(s.DstPort)
+	} else {
+		d.srcPortLo, d.srcPortHi = 0, 65535
+		d.dstPortLo, d.dstPortHi = 0, 65535
+	}
 	return d
 }
 
@@ -257,6 +272,10 @@ func (r *Rule) buildFlowSpec(d descriptor) (flowspec.Rule, error) {
 		return flowspec.Rule{}, err
 	} else {
 		m.DstPort = ops
+	}
+
+	if care, want, ok := r.tcpEmit.resolve(r.tcpCare, r.tcpWant); ok {
+		m.TCPFlags = tcpFlagOps(care, want)
 	}
 
 	return flowspec.Rule{
@@ -417,6 +436,52 @@ func prefixOf(a netip.Addr, bits int) netip.Prefix {
 		bits = max
 	}
 	return netip.PrefixFrom(a, bits)
+}
+
+// TCP flag bits in the TCP header flags byte (sFlow sample byte 13).
+const (
+	tcpFIN uint8 = 1 << 0
+	tcpSYN uint8 = 1 << 1
+	tcpRST uint8 = 1 << 2
+	tcpPSH uint8 = 1 << 3
+	tcpACK uint8 = 1 << 4
+	tcpURG uint8 = 1 << 5
+	tcpECE uint8 = 1 << 6
+	tcpCWR uint8 = 1 << 7
+)
+
+// tcpEmitSpec controls how a rule emits a tcp-flags constraint into the FlowSpec.
+type tcpEmitSpec struct {
+	mode       emitMode // emitDefault: mirror the match filter; emitWildcard: none; emitTemplate: explicit
+	care, want uint8
+}
+
+// resolve returns the (care, want) to emit and whether anything should be emitted,
+// given the rule's match filter as the default.
+func (e tcpEmitSpec) resolve(matchCare, matchWant uint8) (care, want uint8, ok bool) {
+	switch e.mode {
+	case emitWildcard:
+		return 0, 0, false
+	case emitTemplate:
+		return e.care, e.want, e.care != 0
+	default: // emitDefault: mirror the match filter
+		return matchCare, matchWant, matchCare != 0
+	}
+}
+
+// tcpFlagOps builds FlowSpec bitmask ops for "(flags & care) == want": one op for
+// the bits that must be set, one for the bits that must be clear.
+func tcpFlagOps(care, want uint8) []flowspec.BitmaskOp {
+	set := want
+	clear := care &^ want
+	var ops []flowspec.BitmaskOp
+	if set != 0 {
+		ops = append(ops, flowspec.BitmaskOp{Match: true, Value: uint64(set)})
+	}
+	if clear != 0 {
+		ops = append(ops, flowspec.BitmaskOp{And: len(ops) > 0, Not: true, Value: uint64(clear)})
+	}
+	return ops
 }
 
 // portRangeOps encodes an inclusive [lo, hi] as FlowSpec numeric ops: an exact

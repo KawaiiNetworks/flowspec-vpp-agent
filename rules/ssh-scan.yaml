@@ -25,7 +25,7 @@ rules:
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 200
+      max_instances: 20
     trigger:
       terms:
         rate: { metric: pps, window: 30s }
@@ -53,7 +53,7 @@ rules:
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 200
+      max_instances: 20
     trigger:
       terms:
         rate: { metric: pps, window: 30s }
