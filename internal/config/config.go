@@ -18,6 +18,7 @@ type Config struct {
 	BGP        BGP        `yaml:"bgp"`
 	Interfaces Interfaces `yaml:"interfaces"`
 	Metrics    Metrics    `yaml:"metrics"`
+	Local      Local      `yaml:"local_detector"`
 	Log        Log        `yaml:"log"`
 }
 
@@ -55,6 +56,29 @@ type Metrics struct {
 	Listen string `yaml:"listen"` // host:port for /metrics and /healthz; empty disables HTTP
 }
 
+// Local controls the optional sFlow/VPP-stats driven local detector. Rules are
+// loaded from the embedded predefined set plus an optional runtime directory;
+// RulesEnabled selects which (by name) are activated.
+type Local struct {
+	Enabled      bool       `yaml:"enabled"`
+	DryRun       bool       `yaml:"dry_run"`       // log triggered events; take no action
+	RulesDir     string     `yaml:"rules_dir"`     // optional dir of user rule files (*.yaml)
+	RulesEnabled []string   `yaml:"rules_enabled"` // rule names to activate
+	SFlow        SFlow      `yaml:"sflow"`
+	VPPStats     LocalStats `yaml:"vpp_stats"`
+	SampleQueue  int        `yaml:"sample_queue"`
+	EventQueue   int        `yaml:"event_queue"`
+}
+
+type SFlow struct {
+	Listen string `yaml:"listen"`
+}
+
+type LocalStats struct {
+	Enabled  bool     `yaml:"enabled"`
+	Interval Duration `yaml:"interval"`
+}
+
 // Log controls logging.
 type Log struct {
 	Level  string `yaml:"level"`  // debug|info|warn|error
@@ -76,6 +100,15 @@ func defaults() Config {
 			Direction: "ingress",
 		},
 		Log: Log{Level: "info", Format: "text"},
+		Local: Local{
+			SFlow:       SFlow{Listen: "0.0.0.0:6343"},
+			SampleQueue: 65536,
+			EventQueue:  1024,
+			VPPStats: LocalStats{
+				Enabled:  true,
+				Interval: Duration(1000000000),
+			},
+		},
 	}
 }
 
@@ -143,6 +176,26 @@ func (c Config) Validate() error {
 	if c.Metrics.Listen != "" {
 		if err := validateHostPort(c.Metrics.Listen, "metrics.listen"); err != nil {
 			return err
+		}
+	}
+	if c.Local.Enabled {
+		if len(c.Local.RulesEnabled) == 0 {
+			return fmt.Errorf("local_detector requires a non-empty rules_enabled list")
+		}
+		if c.Local.SFlow.Listen == "" {
+			return fmt.Errorf("local_detector.sflow.listen must be set")
+		}
+		if err := validateHostPort(c.Local.SFlow.Listen, "local_detector.sflow.listen"); err != nil {
+			return err
+		}
+		if c.Local.SampleQueue <= 0 {
+			return fmt.Errorf("local_detector.sample_queue must be > 0")
+		}
+		if c.Local.EventQueue <= 0 {
+			return fmt.Errorf("local_detector.event_queue must be > 0")
+		}
+		if c.Local.VPPStats.Enabled && c.Local.VPPStats.Interval.Duration() <= 0 {
+			return fmt.Errorf("local_detector.vpp_stats.interval must be > 0")
 		}
 	}
 	return nil

@@ -24,10 +24,14 @@ import (
 
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/bgp"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/config"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/detector"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/localrules"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/manager"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/metrics"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/sflow"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/version"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/vpp"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/vppstats"
 )
 
 const defaultConfigPath = "/etc/flowspec-vpp-agent/config.yaml"
@@ -113,6 +117,52 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			}
 		}
 	}()
+
+	if cfg.Local.Enabled {
+		rules, err := compileLocalRules(cfg.Local)
+		if err != nil {
+			return err
+		}
+		logLocalDetectorConfig(logger, cfg.Local, len(rules))
+
+		samples := make(chan detector.Sample, cfg.Local.SampleQueue)
+		events := make(chan detector.Event, cfg.Local.EventQueue)
+
+		collector := sflow.NewCollector(cfg.Local.SFlow.Listen, samples, logger)
+		if err := collector.Listen(); err != nil {
+			return fmt.Errorf("listen sFlow: %w", err)
+		}
+		go func() {
+			if err := collector.Run(ctx); err != nil {
+				logger.Error("sFlow collector failed", "error", err)
+				stop()
+			}
+		}()
+
+		engine := detector.NewEngine(rules)
+		logger.Info("local detector memory estimate",
+			"rules", len(rules),
+			"bytes", engine.MemoryEstimate(),
+			"human", humanBytes(engine.MemoryEstimate()),
+			"note", "upper bound at full max_instances")
+		var statsView detector.StatsView
+		if cfg.Local.VPPStats.Enabled {
+			store := vppstats.NewStore(vppstats.DefaultRingConfig())
+			statsView = store
+			poller := vppstats.NewPoller(vppstats.Options{
+				Socket:   cfg.VPP.StatsSocket,
+				Interval: cfg.Local.VPPStats.Interval.Duration(),
+			}, store, logger)
+			go poller.Run(ctx)
+		}
+		go detector.NewRunnerWithContext(engine, samples, events, detector.EvalContext{Stats: statsView}, logger).Run(ctx)
+		ctrl := localrules.New(updates, logger)
+		ctrl.SetDryRun(cfg.Local.DryRun)
+		if cfg.Local.DryRun {
+			logger.Info("local detector in dry-run mode: events are logged, no ACLs are programmed")
+		}
+		go ctrl.Run(ctx, events)
+	}
 
 	logger.Info("agent running")
 	mgr.Run(ctx, updates) // blocks until ctx is cancelled

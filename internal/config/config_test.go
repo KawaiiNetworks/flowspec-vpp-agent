@@ -47,6 +47,41 @@ metrics:
 	}
 }
 
+func TestParse_LocalDetector(t *testing.T) {
+	cfg, err := Parse([]byte(`
+bgp:
+  router_id: 192.0.2.1
+local_detector:
+  enabled: true
+  rules_dir: /etc/flowspec-vpp-agent/rules
+  rules_enabled:
+    - udp-small-flood
+    - ssh-scan
+  sflow:
+    listen: "127.0.0.1:6343"
+  sample_queue: 1024
+  event_queue: 64
+  vpp_stats:
+    enabled: true
+    interval: 2s
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Local.Enabled {
+		t.Fatal("local detector disabled")
+	}
+	if cfg.Local.VPPStats.Interval.Duration().String() != "2s" {
+		t.Fatalf("stats interval = %s, want 2s", cfg.Local.VPPStats.Interval.Duration())
+	}
+	if len(cfg.Local.RulesEnabled) != 2 || cfg.Local.RulesEnabled[0] != "udp-small-flood" {
+		t.Fatalf("rules_enabled = %v", cfg.Local.RulesEnabled)
+	}
+	if cfg.Local.RulesDir != "/etc/flowspec-vpp-agent/rules" {
+		t.Fatalf("rules_dir = %q", cfg.Local.RulesDir)
+	}
+}
+
 func TestParse_IPv6Listen(t *testing.T) {
 	cfg, err := Parse([]byte(`
 bgp:
@@ -74,6 +109,10 @@ func TestValidate_Errors(t *testing.T) {
 		"bgp:\n  listen: '[not-ip]:10179'\n  router_id: 192.0.2.1\n",
 		"bgp:\n  router_id: 2001:db8::1\n",
 		"metrics:\n  listen: bad-port\n",
+		"local_detector:\n  enabled: true\n", // missing rules_enabled
+		"local_detector:\n  enabled: true\n  rules_enabled: [x]\n  sflow:\n    listen: bad\n",
+		"local_detector:\n  enabled: true\n  rules_enabled: [x]\n  sample_queue: 0\n",
+		"local_detector:\n  enabled: true\n  rules_enabled: [x]\n  event_queue: 0\n",
 		"interfaces:\n  mode: bogus\n",
 		"interfaces:\n  mode: list\n", // list mode without list
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",

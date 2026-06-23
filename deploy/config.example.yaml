@@ -33,6 +33,62 @@ metrics:
   # Prometheus /metrics and /healthz endpoint. Empty disables the HTTP listener.
   listen: ""
 
+local_detector:
+  # Optional local sFlow/VPP-stats detector. When enabled, it emits synthetic
+  # FlowSpec rules through the same manager path as BGP FlowSpec.
+  enabled: false
+  sflow:
+    listen: "0.0.0.0:6343"
+  sample_queue: 65536
+  event_queue: 1024
+  vpp_stats:
+    enabled: true
+    interval: 1s
+  # Rules are loaded from the embedded predefined set plus any *.yaml in rules_dir
+  # (user files override built-ins of the same name). rules_enabled selects which
+  # rules — by name — are actually activated.
+  rules_dir: /etc/flowspec-vpp-agent/rules
+  rules_enabled:
+    - udp-small-flood
+    - ssh-scan-ipv4
+    - ssh-scan-ipv6
+
+# A rule file (predefined or under rules_dir) contains one or more rules. match
+# filters which packets count; aggregate sets the granularity of each identity
+# field (omitted = pass-through); flowspec fields default to the descriptor value.
+# See docs/en/configuration.md for the full reference.
+#
+# rules:
+#   - name: udp-small-flood
+#     match:
+#       family: ipv4
+#       proto: udp                # value or list, e.g. [udp, tcp]
+#       packet_len: { lt: 100 }   # filter-only; never enters identity or flowspec
+#     aggregate:
+#       proto: exact              # exact (keep) | all
+#       src: "/32"                # "/N" prefix bits ("/0" collapses all)
+#       dst: "/0"
+#       src_port: all             # exact | all | "LO-HI" | "N" (bucket step)
+#       dst_port: all
+#     history:
+#       fine:  { resolution: 1s, duration: 10m }
+#       medium:  { resolution: 1m, duration: 1d }
+#       coarse: { resolution: 1h, duration: 7d }
+#       max_instances: 200
+#     trigger:
+#       terms:                    # named windowed aggregates (metric/window/offset/agg)
+#         short: { metric: pps, window: 10s }                # from the 1s fine ring
+#         base:  { metric: pps, window: 10m, offset: 1m }    # baseline before the spike
+#       expr: "short > 5 * base and short > 100000"          # free-form comparison
+#       sustained: 20s            # expr must hold this long before emitting
+#     flowspec:
+#       action: drop
+#       ttl: 300s
+#       refresh: true
+#       # family/proto/src_prefix default from the descriptor; dst/ports here are
+#       # wildcard because they were aggregated to "all".
+#     description: "udp flood from {{src}}, pps={{short}}"
+
 log:
   level: info                   # debug|info|warn|error
   format: text                  # text|json

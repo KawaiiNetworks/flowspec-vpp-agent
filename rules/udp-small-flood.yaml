@@ -1,0 +1,39 @@
+# Predefined: UDP small-packet flood by source host, relative to the source's own
+# recent baseline. Enable with local_detector.rules_enabled: [udp-small-flood].
+#
+# All match/aggregate fields are written out for clarity, including the
+# pass-through defaults. The identity is the source host; the emitted FlowSpec
+# blocks UDP from that source (proto kept exact, ports and dst aggregated away).
+rules:
+  - name: udp-small-flood
+    match:
+      family: ipv4
+      proto: udp
+      packet_len: { lt: 100 }   # filter only: count small packets. Never emitted.
+    aggregate:
+      proto: exact    # keep the concrete protocol (udp) in the emitted rule
+      src: "/32"      # identity = the source host
+      dst: "/0"       # ignore destination
+      src_port: all   # ignore source port
+      dst_port: all   # ignore destination port
+    history:
+      fine:  { resolution: 1s, duration: 10m }
+      medium:  { resolution: 1m, duration: 1d }
+      coarse: { resolution: 1h, duration: 7d }
+      max_instances: 200
+    trigger:
+      terms:
+        # short reads the 1s hot ring; base reads the 1m day ring. offset aligns
+        # to the day resolution (1m) so the recent spike is excluded from the
+        # baseline while keeping the term cheap (10 slot reads).
+        short: { metric: pps, window: 10s }
+        base:  { metric: pps, window: 10m, offset: 1m }
+      expr: "short > 5 * base and short > 100000"
+      sustained: 20s
+    flowspec:
+      action: drop
+      ttl: 300s
+      refresh: true
+      # family (ipv4), proto (udp) and src (/32) default from the descriptor;
+      # dst and ports default to wildcard because they were aggregated to "all".
+    description: "udp small-packet flood from {{src}}, pps={{short}}"
