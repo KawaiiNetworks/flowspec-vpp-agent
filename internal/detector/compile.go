@@ -596,12 +596,32 @@ func parseMetric(s string) (metricKind, error) {
 		return metricPPS, nil
 	case "bps":
 		return metricBPS, nil
-	case "vpp.ingress.rx_pps", "vpp.rx_pps":
-		return metricVPPIngressRXPPS, nil
-	case "vpp.ingress.tx_pps", "vpp.tx_pps":
-		return metricVPPIngressTXPPS, nil
-	case "vpp.ingress.drop_pps", "vpp.drop_pps":
-		return metricVPPIngressDropPPS, nil
+	// Per-interface (the instance's packet ingress interface).
+	case "vpp.packet_iface.rx_pps":
+		return metricIfaceRXPPS, nil
+	case "vpp.packet_iface.tx_pps":
+		return metricIfaceTXPPS, nil
+	case "vpp.packet_iface.rx_bps":
+		return metricIfaceRXBPS, nil
+	case "vpp.packet_iface.tx_bps":
+		return metricIfaceTXBPS, nil
+	case "vpp.packet_iface.sw_drop_pps":
+		return metricIfaceSWDropPPS, nil
+	case "vpp.packet_iface.hw_drop_pps":
+		return metricIfaceHWDropPPS, nil
+	// Totals across all interfaces.
+	case "vpp.total.rx_pps":
+		return metricTotalRXPPS, nil
+	case "vpp.total.tx_pps":
+		return metricTotalTXPPS, nil
+	case "vpp.total.rx_bps":
+		return metricTotalRXBPS, nil
+	case "vpp.total.tx_bps":
+		return metricTotalTXBPS, nil
+	case "vpp.total.sw_drop_pps":
+		return metricTotalSWDropPPS, nil
+	case "vpp.total.hw_drop_pps":
+		return metricTotalHWDropPPS, nil
 	default:
 		return 0, fmt.Errorf("unknown metric %q", s)
 	}

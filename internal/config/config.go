@@ -56,6 +56,11 @@ type Peer struct {
 // omitted `receive` defaults to true.
 func (p Peer) Receives() bool { return p.Receive == nil || *p.Receive }
 
+// BGPEnabled reports whether the embedded BGP speaker should run. BGP is enabled
+// exactly when at least one peer is configured; a speaker with no peers does
+// nothing, so an empty/absent bgp section means "detector-only, no BGP".
+func (c Config) BGPEnabled() bool { return len(c.BGP.Peers) > 0 }
+
 // ACL controls how the Managed ACLs are applied to the data plane. FlowSpec
 // carries no interface info, so this is purely local policy.
 type ACL struct {
@@ -158,29 +163,36 @@ func (c Config) Validate() error {
 	if c.VPP.Socket == "" {
 		return fmt.Errorf("vpp.socket must be set")
 	}
-	if err := validateBGPListen(c.BGP.Listen); err != nil {
-		return err
-	}
-	if c.BGP.RouterID == "" {
-		return fmt.Errorf("bgp.router_id must be set")
-	}
-	addr, err := netip.ParseAddr(c.BGP.RouterID)
-	if err != nil {
-		return fmt.Errorf("bgp.router_id %q: %w", c.BGP.RouterID, err)
-	}
-	if !addr.Is4() {
-		return fmt.Errorf("bgp.router_id %q must be an IPv4 address", c.BGP.RouterID)
-	}
-	for i, p := range c.BGP.Peers {
-		if _, err := netip.ParseAddr(p.Address); err != nil {
-			return fmt.Errorf("bgp.peers[%d].address %q: %w", i, p.Address, err)
+	// BGP is only validated and started when peers are configured. A detector-only
+	// deployment needs no router_id and runs no speaker.
+	if c.BGPEnabled() {
+		if err := validateBGPListen(c.BGP.Listen); err != nil {
+			return err
 		}
-		if p.PeerASN == 0 {
-			return fmt.Errorf("bgp.peers[%d].peer_asn must be set", i)
+		if c.BGP.RouterID == "" {
+			return fmt.Errorf("bgp.router_id must be set when bgp.peers are configured")
 		}
-		if !p.Receives() && !p.Send {
-			return fmt.Errorf("bgp.peers[%d] has receive=false and send=false: nothing to do", i)
+		addr, err := netip.ParseAddr(c.BGP.RouterID)
+		if err != nil {
+			return fmt.Errorf("bgp.router_id %q: %w", c.BGP.RouterID, err)
 		}
+		if !addr.Is4() {
+			return fmt.Errorf("bgp.router_id %q must be an IPv4 address", c.BGP.RouterID)
+		}
+		for i, p := range c.BGP.Peers {
+			if _, err := netip.ParseAddr(p.Address); err != nil {
+				return fmt.Errorf("bgp.peers[%d].address %q: %w", i, p.Address, err)
+			}
+			if p.PeerASN == 0 {
+				return fmt.Errorf("bgp.peers[%d].peer_asn must be set", i)
+			}
+			if !p.Receives() && !p.Send {
+				return fmt.Errorf("bgp.peers[%d] has receive=false and send=false: nothing to do", i)
+			}
+		}
+	}
+	if !c.BGPEnabled() && !c.Detector.Enabled {
+		return fmt.Errorf("nothing to do: configure bgp.peers or enable the detector")
 	}
 	switch c.ACL.Interfaces.Mode {
 	case "all":

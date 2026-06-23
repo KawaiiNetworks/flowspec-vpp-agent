@@ -49,6 +49,20 @@ func compileDetectorRules(cfg config.Detector) ([]*detector.Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile detector rules: %w", err)
 	}
+	// A rule that reads vpp.packet_iface.* metrics is meaningless without the stats
+	// poller: those terms would silently read 0 and the rule would never fire.
+	// Reject the config rather than mislead the operator.
+	if !cfg.VPPStats.Enabled {
+		var offenders []string
+		for _, r := range rules {
+			if r.UsesVPPStats() {
+				offenders = append(offenders, r.Name())
+			}
+		}
+		if len(offenders) > 0 {
+			return nil, fmt.Errorf("detector.vpp_stats.enabled is false but these rules use vpp.* metrics: %s", strings.Join(offenders, ", "))
+		}
+	}
 	return rules, nil
 }
 

@@ -36,6 +36,9 @@ func TestParse_MetricsListenEnabled(t *testing.T) {
 	cfg, err := Parse([]byte(`
 bgp:
   router_id: 192.0.2.1
+  peers:
+    - address: 198.51.100.1
+      peer_asn: 65001
 metrics:
   listen: "127.0.0.1:9469"
 `))
@@ -106,11 +109,31 @@ bgp:
 	}
 }
 
+func TestParse_DetectorOnlyNoBGP(t *testing.T) {
+	cfg, err := Parse([]byte(`
+detector:
+  enabled: true
+  rules_enabled: [dns-reflection]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BGPEnabled() {
+		t.Error("BGP should be disabled with no peers")
+	}
+	if !cfg.Detector.Enabled {
+		t.Error("detector should be enabled")
+	}
+}
+
 func TestParse_IPv6Listen(t *testing.T) {
 	cfg, err := Parse([]byte(`
 bgp:
   listen: "[2001:db8::1]:10179"
   router_id: 192.0.2.1
+  peers:
+    - address: 198.51.100.1
+      peer_asn: 65001
 metrics:
   listen: "[::1]:9469"
 `))
@@ -142,6 +165,7 @@ func TestValidate_Errors(t *testing.T) {
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n",                                                             // missing peer_asn
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n      peer_asn: 1\n      receive: false\n      send: false\n", // no-op peer
+		"vpp:\n  socket: /run/vpp/api.sock\n",                                                                  // nothing to do: no peers, no detector
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {

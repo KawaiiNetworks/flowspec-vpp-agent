@@ -1,0 +1,15 @@
+vpp:
+  socket: /run/vpp/api.sock
+  stats_socket: /run/vpp/stats.sock
+
+detector:
+  enabled: true
+  rules_dir: /etc/flowspec-vpp-agent/rules
+  rules_enabled:
+    - dns-reflection
+    - ntp-reflection
+    - memcached-reflection
+    - udp-flood-ipv4
+    - syn-flood-ipv4
+    - icmp-flood-ipv4
+    - ssh-scan-ipv4

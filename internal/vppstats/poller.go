@@ -100,12 +100,15 @@ func (p *Poller) addRates(now time.Time, prev, cur map[string]counters) {
 			name, aliases = c.name, []string{c.ifindex}
 		}
 		p.store.Add(Sample{
-			At:      now,
-			Name:    name,
-			Aliases: aliases,
-			RXPPS:   deltaRate(old.rxPackets, c.rxPackets, seconds),
-			TXPPS:   deltaRate(old.txPackets, c.txPackets, seconds),
-			DropPPS: deltaRate(old.drops, c.drops, seconds),
+			At:        now,
+			Name:      name,
+			Aliases:   aliases,
+			RXPPS:     deltaRate(old.rxPackets, c.rxPackets, seconds),
+			TXPPS:     deltaRate(old.txPackets, c.txPackets, seconds),
+			RXBPS:     deltaRate(old.rxBytes, c.rxBytes, seconds) * 8,
+			TXBPS:     deltaRate(old.txBytes, c.txBytes, seconds) * 8,
+			SWDropPPS: deltaRate(old.drops, c.drops, seconds),
+			HWDropPPS: deltaRate(old.rxMiss, c.rxMiss, seconds),
 		})
 	}
 }
@@ -116,7 +119,10 @@ type counters struct {
 	ifindex   string
 	rxPackets uint64
 	txPackets uint64
-	drops     uint64
+	rxBytes   uint64
+	txBytes   uint64
+	drops     uint64 // /if/drops: VPP graph drops (incl. ACL deny) — software
+	rxMiss    uint64 // /if/rx-miss: NIC RX ring overflow — hardware
 }
 
 func snapshot(now time.Time, stats api.InterfaceStats) map[string]counters {
@@ -131,7 +137,10 @@ func snapshot(now time.Time, stats api.InterfaceStats) map[string]counters {
 			ifindex:   idx,
 			rxPackets: iface.Rx.Packets,
 			txPackets: iface.Tx.Packets,
+			rxBytes:   iface.Rx.Bytes,
+			txBytes:   iface.Tx.Bytes,
 			drops:     iface.Drops,
+			rxMiss:    iface.RxMiss,
 		}
 	}
 	return out

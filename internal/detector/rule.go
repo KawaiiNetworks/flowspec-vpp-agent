@@ -60,6 +60,18 @@ func (r *Rule) InstanceCount() int { return r.store.len() }
 // MaxInstances returns the fixed capacity for this rule.
 func (r *Rule) MaxInstances() int { return r.store.max }
 
+// UsesVPPStats reports whether any trigger term reads a VPP-stats metric
+// (vpp.packet_iface.*). Such a rule is meaningless unless detector.vpp_stats is
+// enabled, so the caller can reject the configuration early.
+func (r *Rule) UsesVPPStats() bool {
+	for _, t := range r.terms {
+		if t.metric.isStats() {
+			return true
+		}
+	}
+	return false
+}
+
 // Observe folds one matching sample into the rule's instance rings. It performs
 // no trigger work; evaluation happens on Tick.
 func (r *Rule) Observe(s Sample) {
@@ -210,23 +222,20 @@ func (r *Rule) termValue(t *term, inst *instance, now time.Time, ctx EvalContext
 }
 
 func statsValue(m metricKind, ingressIf string, ctx EvalContext) float64 {
-	if ctx.Stats == nil || ingressIf == "" {
+	if ctx.Stats == nil {
 		return 0
 	}
-	rx, tx, drop, ok := ctx.Stats.InterfaceRates(ingressIf)
+	if m.isTotal() {
+		return m.selectRate(ctx.Stats.TotalRates())
+	}
+	if ingressIf == "" {
+		return 0
+	}
+	rates, ok := ctx.Stats.InterfaceRates(ingressIf)
 	if !ok {
 		return 0
 	}
-	switch m {
-	case metricVPPIngressRXPPS:
-		return rx
-	case metricVPPIngressTXPPS:
-		return tx
-	case metricVPPIngressDropPPS:
-		return drop
-	default:
-		return 0
-	}
+	return m.selectRate(rates)
 }
 
 func (r *Rule) buildFlowSpec(d descriptor) (flowspec.Rule, error) {

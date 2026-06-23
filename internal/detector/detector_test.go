@@ -323,7 +323,7 @@ rules:
       max_instances: 10
     trigger:
       terms:
-        drops: { metric: vpp.ingress.drop_pps }
+        drops: { metric: vpp.packet_iface.sw_drop_pps }
       expr: "drops > 1000"
     flowspec:
       action: drop
@@ -623,7 +623,17 @@ type fakeRate struct {
 
 type fakeStats map[string]fakeRate
 
-func (f fakeStats) InterfaceRates(name string) (float64, float64, float64, bool) {
+func (f fakeStats) InterfaceRates(name string) (Rates, bool) {
 	v, ok := f[name]
-	return v.rx, v.tx, v.drop, ok
+	return Rates{RXPPS: v.rx, TXPPS: v.tx, SWDropPPS: v.drop}, ok
+}
+
+func (f fakeStats) TotalRates() Rates {
+	var t Rates
+	for _, v := range f {
+		t.RXPPS += v.rx
+		t.TXPPS += v.tx
+		t.SWDropPPS += v.drop
+	}
+	return t
 }

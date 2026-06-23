@@ -125,7 +125,7 @@ metrics:
 
 同一监听端口上的 `GET /status` 返回检测器实时状态的 JSON 快照（检测器未启用时各段为空）：
 
-- `traffic` —— VPP stats 轮询得到的每接口最新速率（`rx_pps` / `tx_pps` / `drop_pps`）。
+- `traffic` —— VPP stats 轮询得到的每接口最新速率（`rx_pps` / `tx_pps` / `rx_bps` / `tx_bps` / `sw_drop_pps` / `hw_drop_pps`）。
 - `rules` —— 每条检测规则及其占用（`instance_count` / `max_instances`）与当前实例。每个实例携带其描述符（family、proto、src/dst、端口）、来自 fine ring 的当前 `pps` / `bps`、求值后的触发项 `terms`，以及 `firing`（触发表达式当前是否成立）。
 - `active` —— 当前通过 manager 下发的 synthetic FlowSpec 租约，含 `flowspec` 标识、`family` 与 `expires_at`。
 
@@ -263,9 +263,28 @@ rules:
 
 `terms` 是命名窗口聚合；`expr` 是其上的自由布尔表达式；`sustained` 去抖。term 含：
 
-- `metric`：`pps`、`bps`,或 VPP 接口计数器 `vpp.ingress.rx_pps`、`vpp.ingress.tx_pps`、
-  `vpp.ingress.drop_pps`（按实例最近的 `ingress_if` 查找）。
-- `window`：聚合的时间跨度。
+- `metric`：以下之一
+  - `pps`（默认）/ `bps` —— 来自本规则历史环的采样流速率。
+  - VPP stats 指标(来自 stats 轮询器，见下)。它们无需 `window`（读最新一次轮询值，
+    不做窗口聚合）；用到其中任一项的规则要求 `detector.vpp_stats.enabled: true`，
+    否则 agent **拒绝启动**，而不是让该项静默读 0。
+
+  VPP stats 指标有两个作用域:
+  - `vpp.packet_iface.<字段>` —— **该实例的包进来的那个接口**(最近一次的入站接口)。
+  - `vpp.total.<字段>` —— **所有** VPP 接口的总和。
+
+  `<字段>` 取值:
+
+  | 字段 | 含义 |
+  | --- | --- |
+  | `rx_pps` / `tx_pps` | 该接口每秒收 / 发包数 |
+  | `rx_bps` / `tx_bps` | 该接口每秒收 / 发比特数 |
+  | `sw_drop_pps` | VPP 转发图丢的包/秒（`/if/drops`）——**包含本 agent 自己的 ACL deny** |
+  | `hw_drop_pps` | NIC 收包环溢出丢的包/秒（`/if/rx-miss`）——硬件「扛不住」的信号 |
+
+  例如 `vpp.total.rx_bps` 是整机入向比特速率，`vpp.packet_iface.hw_drop_pps`
+  是被攻击接口上的网卡级丢包。**没有** `drop_bps`：VPP 的丢包计数器只有包数、没有字节数。
+- `window`：聚合的时间跨度（`pps`/`bps` 必填；`vpp.*` 忽略）。
 - `offset`（可选）：窗口*结束点*往回退多远——`{window: 10m, offset: 1m}` 覆盖 `[now−11m, now−1m]`,
   用于构造排除近期突增的基线。
 - `agg`（可选）：`avg`（默认,窗口速率）、`max`（单槽峰值速率）、`sum`（总量）。

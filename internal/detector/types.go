@@ -64,9 +64,26 @@ type EvalContext struct {
 	Stats StatsView
 }
 
-// StatsView exposes per-interface VPP counters as rates.
+// Rates holds the VPP rate signals a rule can read, for one interface or the
+// total across all interfaces. drop counters are packets-only (VPP exposes no
+// byte counter for drops). SWDrop is the VPP graph drop counter (/if/drops,
+// which includes our own ACL deny); HWDrop is the NIC RX-ring overflow
+// (/if/rx-miss), i.e. the hardware "can't keep up" signal.
+type Rates struct {
+	RXPPS     float64
+	TXPPS     float64
+	RXBPS     float64
+	TXBPS     float64
+	SWDropPPS float64
+	HWDropPPS float64
+}
+
+// StatsView exposes VPP interface counters as rates. InterfaceRates returns the
+// rates for one interface (ok=false if unknown); TotalRates returns the sum
+// across all interfaces.
 type StatsView interface {
-	InterfaceRates(name string) (rxPPS, txPPS, dropPPS float64, ok bool)
+	InterfaceRates(name string) (Rates, bool)
+	TotalRates() Rates
 }
 
 // descriptor is the instance identity: the aggregated signature of a matched
@@ -102,17 +119,47 @@ type metricKind uint8
 const (
 	metricPPS metricKind = iota
 	metricBPS
-	metricVPPIngressRXPPS
-	metricVPPIngressTXPPS
-	metricVPPIngressDropPPS
+	// Per-interface VPP rates, keyed by the instance's packet ingress interface.
+	metricIfaceRXPPS
+	metricIfaceTXPPS
+	metricIfaceRXBPS
+	metricIfaceTXBPS
+	metricIfaceSWDropPPS
+	metricIfaceHWDropPPS
+	// Totals across all VPP interfaces.
+	metricTotalRXPPS
+	metricTotalTXPPS
+	metricTotalRXBPS
+	metricTotalTXBPS
+	metricTotalSWDropPPS
+	metricTotalHWDropPPS
 )
 
-func (m metricKind) isStats() bool {
+// isStats reports whether the metric reads from VPP stats (vs. this rule's own
+// history rings).
+func (m metricKind) isStats() bool { return m >= metricIfaceRXPPS }
+
+// isTotal reports whether the metric is an all-interface total (vs. the
+// instance's ingress interface).
+func (m metricKind) isTotal() bool { return m >= metricTotalRXPPS }
+
+// selectRate picks the field of a Rates set this metric refers to.
+func (m metricKind) selectRate(r Rates) float64 {
 	switch m {
-	case metricVPPIngressRXPPS, metricVPPIngressTXPPS, metricVPPIngressDropPPS:
-		return true
+	case metricIfaceRXPPS, metricTotalRXPPS:
+		return r.RXPPS
+	case metricIfaceTXPPS, metricTotalTXPPS:
+		return r.TXPPS
+	case metricIfaceRXBPS, metricTotalRXBPS:
+		return r.RXBPS
+	case metricIfaceTXBPS, metricTotalTXBPS:
+		return r.TXBPS
+	case metricIfaceSWDropPPS, metricTotalSWDropPPS:
+		return r.SWDropPPS
+	case metricIfaceHWDropPPS, metricTotalHWDropPPS:
+		return r.HWDropPPS
 	default:
-		return false
+		return 0
 	}
 }
 

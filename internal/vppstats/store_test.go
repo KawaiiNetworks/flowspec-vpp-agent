@@ -26,9 +26,9 @@ func TestStoreFixedRingSizes(t *testing.T) {
 	if len(r.day.slots) != 10 || len(r.week.slots) != 6 || len(r.month.slots) != 5 {
 		t.Fatalf("ring sizes = day %d week %d month %d", len(r.day.slots), len(r.week.slots), len(r.month.slots))
 	}
-	rx, _, _, ok := s.InterfaceRates("eth0")
-	if !ok || rx != 99 {
-		t.Fatalf("interface rates = %v/%f, want found rx 99", ok, rx)
+	rates, ok := s.InterfaceRates("eth0")
+	if !ok || rates.RXPPS != 99 {
+		t.Fatalf("interface rates = %v/%f, want found rx 99", ok, rates.RXPPS)
 	}
 }
 
@@ -41,11 +41,11 @@ func TestStoreAliasDedup(t *testing.T) {
 	if s.Interfaces() != 1 {
 		t.Fatalf("interfaces = %d, want 1", s.Interfaces())
 	}
-	if rx, _, _, ok := s.InterfaceRates("GigabitEthernet0/0/0"); !ok || rx != 42 {
-		t.Fatalf("lookup by name = %v/%f, want 42", ok, rx)
+	if r, ok := s.InterfaceRates("GigabitEthernet0/0/0"); !ok || r.RXPPS != 42 {
+		t.Fatalf("lookup by name = %v/%f, want 42", ok, r.RXPPS)
 	}
-	if rx, _, _, ok := s.InterfaceRates("ifindex:3"); !ok || rx != 42 {
-		t.Fatalf("lookup by ifindex alias = %v/%f, want 42", ok, rx)
+	if r, ok := s.InterfaceRates("ifindex:3"); !ok || r.RXPPS != 42 {
+		t.Fatalf("lookup by ifindex alias = %v/%f, want 42", ok, r.RXPPS)
 	}
 
 	// Snapshot lists the interface once, under its name.
@@ -61,11 +61,24 @@ func TestStoreUnnamedInterface(t *testing.T) {
 	now := time.Unix(1000, 0)
 	s.Add(Sample{At: now, Name: "ifindex:7", RXPPS: 5})
 
-	if rx, _, _, ok := s.InterfaceRates("ifindex:7"); !ok || rx != 5 {
-		t.Fatalf("lookup by ifindex = %v/%f, want 5", ok, rx)
+	if r, ok := s.InterfaceRates("ifindex:7"); !ok || r.RXPPS != 5 {
+		t.Fatalf("lookup by ifindex = %v/%f, want 5", ok, r.RXPPS)
 	}
 	snap := s.Snapshot()
 	if len(snap) != 1 || snap[0].Name != "ifindex:7" {
 		t.Fatalf("snapshot = %+v, want single ifindex entry", snap)
+	}
+}
+
+// TotalRates sums the latest rates across all interfaces.
+func TestStoreTotalRates(t *testing.T) {
+	s := NewStore(DefaultRingConfig())
+	now := time.Unix(1000, 0)
+	s.Add(Sample{At: now, Name: "eth0", RXPPS: 10, TXPPS: 1, RXBPS: 800, SWDropPPS: 2, HWDropPPS: 3})
+	s.Add(Sample{At: now, Name: "eth1", RXPPS: 20, TXPPS: 4, RXBPS: 1600, SWDropPPS: 5, HWDropPPS: 7})
+
+	tot := s.TotalRates()
+	if tot.RXPPS != 30 || tot.TXPPS != 5 || tot.RXBPS != 2400 || tot.SWDropPPS != 7 || tot.HWDropPPS != 10 {
+		t.Fatalf("total = %+v", tot)
 	}
 }

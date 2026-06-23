@@ -140,7 +140,7 @@ A `GET /status` on the same listener returns a JSON snapshot of the detector's
 live state (empty sections when the detector is disabled):
 
 - `traffic` — latest per-interface rates from the VPP stats poller
-  (`rx_pps` / `tx_pps` / `drop_pps`).
+  (`rx_pps` / `tx_pps` / `rx_bps` / `tx_bps` / `sw_drop_pps` / `hw_drop_pps`).
 - `rules` — every detector rule with its occupancy (`instance_count` /
   `max_instances`) and current instances. Each instance carries its descriptor
   (family, proto, src/dst, ports), current `pps` / `bps` from the fine ring, the
@@ -301,10 +301,31 @@ trigger window without over-allocating. Example: `fine {1s, 10m}` = 600 slots,
 `terms` are named windowed aggregates; `expr` is a free-form boolean expression
 over them; `sustained` debounces. A term has:
 
-- `metric`: `pps`, `bps`, or a VPP interface counter `vpp.ingress.rx_pps`,
-  `vpp.ingress.tx_pps`, `vpp.ingress.drop_pps` (keyed by the instance's last-seen
-  `ingress_if`).
-- `window`: the span aggregated.
+- `metric`: one of
+  - `pps` (default) / `bps` — sampled flow rate from this rule's history rings.
+  - A VPP stats metric (read from the stats poller, see below). These need no
+    `window` (they read the latest poll, not a window), and a rule using any of
+    them requires `detector.vpp_stats.enabled: true` — otherwise the agent
+    **refuses to start** rather than let the term silently read 0.
+
+  VPP stats metrics come in two scopes:
+  - `vpp.packet_iface.<field>` — the interface the instance's packets entered on
+    (its last-seen ingress interface).
+  - `vpp.total.<field>` — the sum across all VPP interfaces.
+
+  `<field>` is one of:
+
+  | field | meaning |
+  | --- | --- |
+  | `rx_pps` / `tx_pps` | packets/s received / transmitted on the interface |
+  | `rx_bps` / `tx_bps` | bits/s received / transmitted on the interface |
+  | `sw_drop_pps` | packets/s dropped by VPP's forwarding graph (`/if/drops`) — **includes this agent's own ACL deny** |
+  | `hw_drop_pps` | packets/s dropped by the NIC RX ring overflow (`/if/rx-miss`) — the hardware "can't keep up" signal |
+
+  So e.g. `vpp.total.rx_bps` is the box-wide inbound bit rate, and
+  `vpp.packet_iface.hw_drop_pps` is NIC-level loss on the attacked interface.
+  There is **no** `drop_bps`: VPP's drop counters are packets-only.
+- `window`: the span aggregated (required for `pps`/`bps`; ignored for `vpp.*`).
 - `offset` (optional): how far back the window *ends* — `{window: 10m, offset: 1m}`
   covers `[now−11m, now−1m]`. Use it to build a baseline that excludes the recent
   spike.

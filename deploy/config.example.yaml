@@ -1,111 +1,78 @@
-# Example configuration for flowspec-vpp-agent (§19.2).
+# flowspec-vpp-agent — full configuration reference (§19.2).
+# Each field is set to its default and annotated: [required] / [opt] with the
+# omitted behavior. Need at least one of bgp.peers or detector.enabled:true.
+# Minimal detector-only config: see config.simple.yaml.
 
-vpp:
-  # VPP binary API socket and stats socket (both under /run/vpp, §19).
-  socket: /run/vpp/api.sock
-  stats_socket: /run/vpp/stats.sock
+vpp:                                 # [opt] VPP connection sockets; defaults below work as-is
+  socket: /run/vpp/api.sock          # [opt] default; must be non-empty
+  stats_socket: /run/vpp/stats.sock  # [opt] default; only used by detector.vpp_stats
 
-bgp:
-  # Embedded GoBGP speaker. Default port 10179 avoids a native BGP daemon on 179.
-  listen: "0.0.0.0:10179"
-  router_id: "192.0.2.1"
-  asn: 65000
-  # Multiple peers = multiple FlowSpec sessions (§17). Each peer has a direction:
-  #   receive (default true): accept its FlowSpec, apply to VPP, and relay it to
-  #                           send peers.
-  #   send    (default false): advertise our whole FlowSpec table (received rules
-  #                            plus detector-originated drops) to this peer.
-  # A peer may be both. receive=false + send=false is rejected (nothing to do).
-  peers:
-    - address: "198.51.100.1"   # downstream FlowSpec exporter (e.g. FastNetMon)
-      peer_asn: 65001
-      passive: true             # listen-only is typical for FlowSpec collectors
-      # receive: true           # (default) import this peer's FlowSpec
-    - address: "203.0.113.1"    # upstream we advertise our FlowSpec to
-      peer_asn: 65000
-      receive: false            # do not import its FlowSpec
-      send: true                # advertise our table to it
+bgp:                                 # [opt] embedded BGP speaker; runs only when peers is non-empty
+  listen: "0.0.0.0:10179"            # [opt] default; speaker listen host:port
+  router_id: "192.0.2.1"             # [req if peers] IPv4; unused without peers
+  asn: 65000                         # [req if peers] local AS; default 0 (unusable)
+  peers:                             # [opt] empty -> BGP disabled
+    - address: "198.51.100.1"        # [req] valid IP
+      peer_asn: 65001                # [req] non-zero
+      port: 0                        # [opt] default 0 = BGP default port
+      passive: true                  # [opt] default false; listen-only
+      receive: true                  # [opt] default true; import its FlowSpec to VPP + relay
+      send: false                    # [opt] default false; advertise our table to it
+    - address: "203.0.113.1"         # [req] second peer: an upstream we advertise to
+      peer_asn: 65000                # [req] non-zero
+      receive: false                 # don't import this upstream's FlowSpec
+      send: true                     # advertise our table to it
 
-acl:
-  # How the Managed ACLs are applied to the data plane. FlowSpec carries no
-  # interface info, so this is purely local policy.
-  interfaces:
-    # Where the Managed ACLs are applied (§16). Default: all data-plane
-    # interfaces, ingress.
-    mode: all                   # "all" or "list"
-    # list:                     # required when mode: list
-    #   - GigabitEthernet0/0/0
-    #   - GigabitEthernet0/0/1
-    direction: ingress          # "ingress" (default) or "egress"
+acl:                                 # [opt] where Managed ACLs attach (local policy)
+  interfaces:                        # [opt] interface selection + direction
+    mode: all                        # [opt] default "all"; or "list"
+    list: []                         # [req if mode=list] interface names; else ignored
+    direction: ingress               # [opt] default "ingress"; or "egress"
 
-metrics:
-  # HTTP listener for /metrics (Prometheus), /healthz and /status (JSON snapshot
-  # of detector traffic, rule instances and active leases). Empty disables it.
-  listen: ""
+metrics:                             # [opt] HTTP endpoint
+  listen: ""                         # [opt] default "" = HTTP disabled; set host:port for /metrics,/healthz,/status
 
-detector:
-  # Optional sFlow/VPP-stats detector. When enabled, it emits synthetic
-  # FlowSpec rules through the same manager path as BGP FlowSpec.
-  enabled: false
-  sflow:
-    listen: "0.0.0.0:6343"
-  sample_queue: 65536
-  event_queue: 1024
-  vpp_stats:
-    enabled: true
-    interval: 1s
-  # Rules are loaded from the embedded predefined set plus any *.yaml in rules_dir
-  # (user files override built-ins of the same name). rules_enabled selects which
-  # rules — by name — are actually activated.
-  rules_dir: /etc/flowspec-vpp-agent/rules
-  # Built-in rules (see rules/): reflection (dns/ntp/memcached/ssdp/cldap/snmp/
-  # chargen), udp-flood-ipv4/6, syn-flood-ipv4/6, icmp-flood-ipv4/icmpv6-flood,
-  # ssh-scan-ipv4/6. Enable the ones you want by name:
-  rules_enabled:
-    - dns-reflection
-    - ntp-reflection
-    - memcached-reflection
-    - udp-flood-ipv4
-    - syn-flood-ipv4
-    - icmp-flood-ipv4
-    - ssh-scan-ipv4
+detector:                            # [opt] sFlow/VPP-stats detector
+  enabled: true                      # [opt] default false; false -> detector off
+  dry_run: false                     # [opt] default false; true -> log only, no ACL/announce
+  rules_dir: /etc/flowspec-vpp-agent/rules  # [opt] default ""; user rules override built-ins
+  rules_enabled:                     # [req if enabled] non-empty; rule names to activate
+    - dns-reflection                 # built-in: DNS reflection
+    - ntp-reflection                 # built-in: NTP reflection
+    - memcached-reflection           # built-in: memcached reflection
+    - udp-flood-ipv4                 # built-in: UDP flood (v4)
+    - syn-flood-ipv4                 # built-in: TCP SYN flood (v4)
+    - icmp-flood-ipv4                # built-in: ICMP flood (v4)
+    - ssh-scan-ipv4                  # built-in: SSH scan (v4)
+  sflow:                             # [opt] sFlow collector
+    listen: "0.0.0.0:6343"           # [req if enabled] default; sFlow v5 UDP host:port
+  vpp_stats:                         # [opt] VPP interface counter polling
+    enabled: true                    # [opt] default true; false -> vpp.ingress.* read 0
+    interval: 1s                     # [opt] default 1s; must be >0 when enabled
+  sample_queue: 65536                # [opt] default 65536; >0; overflow drops samples
+  event_queue: 1024                  # [opt] default 1024; >0
 
-# A rule file (predefined or under rules_dir) contains one or more rules. match
-# filters which packets count; aggregate sets the granularity of each identity
-# field (omitted = pass-through); flowspec fields default to the descriptor value.
-# See docs/en/configuration.md for the full reference.
+log:                                 # [opt] logging
+  level: info                        # [opt] default "info"; debug|info|warn|error
+  format: text                       # [opt] default "text"; text|json
+
+# Rule files (built-in or under detector.rules_dir) hold one or more rules. See
+# docs/en/configuration.md for the full rule reference.
 #
 # rules:
 #   - name: udp-small-flood
-#     match:
-#       family: ipv4
-#       proto: udp                # value or list, e.g. [udp, tcp]
-#       packet_len: { lt: 100 }   # filter-only; never enters identity or flowspec
-#     aggregate:
-#       proto: exact              # exact (keep) | all
-#       src: "/32"                # "/N" prefix bits ("/0" collapses all)
-#       dst: "/0"
-#       src_port: all             # exact | all | "LO-HI" | "N" (bucket step)
-#       dst_port: all
+#     match: { family: ipv4, proto: udp, packet_len: { lt: 100 } }
+#     aggregate: { proto: exact, src: "/32", dst: "/0", src_port: all, dst_port: all }
 #     history:
-#       fine:  { resolution: 1s, duration: 10m }
-#       medium:  { resolution: 1m, duration: 1d }
+#       fine:   { resolution: 1s, duration: 10m }
+#       medium: { resolution: 1m, duration: 1d }
 #       coarse: { resolution: 1h, duration: 7d }
 #       max_instances: 20
 #     trigger:
-#       terms:                    # named windowed aggregates (metric/window/offset/agg)
-#         short: { metric: pps, window: 10s }                # from the 1s fine ring
-#         base:  { metric: pps, window: 10m, offset: 1m }    # baseline before the spike
-#       expr: "short > 5 * base and short > 100000"          # free-form comparison
-#       sustained: 20s            # expr must hold this long before emitting
-#     flowspec:
-#       action: drop
-#       ttl: 300s
-#       refresh: true
-#       # family/proto/src_prefix default from the descriptor; dst/ports here are
-#       # wildcard because they were aggregated to "all".
+#       terms:
+#         short: { metric: pps, window: 10s }
+#         base:  { metric: pps, window: 10m, offset: 1m }
+#       expr: "short > 5 * base and short > 100000"
+#       sustained: 20s
+#     flowspec: { action: drop, ttl: 300s, refresh: true }
 #     description: "udp flood from {{src}}, pps={{short}}"
-
-log:
-  level: info                   # debug|info|warn|error
-  format: text                  # text|json

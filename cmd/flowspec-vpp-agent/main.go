@@ -103,21 +103,28 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}
 
-	bgpSrv := bgp.New(toBGPOptions(cfg.BGP), logger)
-	if err := bgpSrv.Start(ctx); err != nil {
-		return fmt.Errorf("start BGP: %w", err)
-	}
-	defer bgpSrv.Stop()
-
-	go func() {
-		for u := range bgpSrv.Updates() {
-			select {
-			case updates <- u:
-			case <-ctx.Done():
-				return
-			}
+	// BGP is optional: it runs only when peers are configured. A detector-only
+	// deployment programs VPP directly through the same updates channel.
+	var bgpSrv *bgp.Server
+	if cfg.BGPEnabled() {
+		bgpSrv = bgp.New(toBGPOptions(cfg.BGP), logger)
+		if err := bgpSrv.Start(ctx); err != nil {
+			return fmt.Errorf("start BGP: %w", err)
 		}
-	}()
+		defer bgpSrv.Stop()
+
+		go func() {
+			for u := range bgpSrv.Updates() {
+				select {
+				case updates <- u:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	} else {
+		logger.Info("BGP disabled (no peers configured)")
+	}
 
 	if cfg.Detector.Enabled {
 		rules, err := compileDetectorRules(cfg.Detector)
@@ -164,7 +171,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		ctrl.SetDryRun(cfg.Detector.DryRun)
 		// Originate detector leases upstream when any peer is configured to receive
 		// our FlowSpec (the BGP export policy restricts delivery to those peers).
-		if hasSendPeer(cfg.BGP) {
+		if bgpSrv != nil && hasSendPeer(cfg.BGP) {
 			ctrl.SetAdvertiser(bgpSrv)
 			logger.Info("detector leases will be advertised to send peers")
 		}
