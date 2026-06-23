@@ -21,9 +21,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
       -X github.com/kawaiinetworks/flowspec-vpp-agent/internal/version.Date=${DATE}" \
     -o /flowspec-vpp-agent ./cmd/flowspec-vpp-agent
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12
 COPY --from=builder /flowspec-vpp-agent /flowspec-vpp-agent
-# Runs as root in deployment (see compose user: "0:0") to access /run/vpp/api.sock.
+# Default user is root (uid 0): the agent must open the root-owned
+# /run/vpp/api.sock, and orchestrators that cannot override the container user
+# (e.g. VyOS `set container`) rely on the image already running as root.
 EXPOSE 10179
 ENTRYPOINT ["/flowspec-vpp-agent"]
 CMD ["--config", "/etc/flowspec-vpp-agent/config.yaml"]
