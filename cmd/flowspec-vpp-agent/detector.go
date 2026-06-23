@@ -38,13 +38,33 @@ func compileDetectorRules(cfg *config.Detector) ([]*detector.Rule, error) {
 		}
 	}
 
-	selected := make([]detector.RuleConfig, 0, len(cfg.RulesEnabled))
+	// Effective enabled set: the built-ins (unless builtin_rules is false) merged
+	// with everything named in rules_enabled. A user rule from rules_dir takes
+	// effect by being listed in rules_enabled; with builtin_rules off, rules_enabled
+	// is also how you pick a subset of built-ins.
+	enabled := map[string]bool{}
+	if cfg.BuiltinRulesEnabled() {
+		for name := range builtin {
+			enabled[name] = true
+		}
+	}
 	for _, name := range cfg.RulesEnabled {
-		rc, ok := defs[name]
-		if !ok {
+		if _, ok := defs[name]; !ok {
 			return nil, fmt.Errorf("detector.rules_enabled: rule %q not found in built-in set or rules_dir", name)
 		}
-		selected = append(selected, rc)
+		enabled[name] = true
+	}
+	if len(enabled) == 0 {
+		return nil, fmt.Errorf("detector: no rules enabled (builtin_rules is false and rules_enabled is empty)")
+	}
+	names := make([]string, 0, len(enabled))
+	for name := range enabled {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic compile + log order
+	selected := make([]detector.RuleConfig, 0, len(names))
+	for _, name := range names {
+		selected = append(selected, defs[name])
 	}
 	rules, err := detector.CompileRules(selected)
 	if err != nil {
@@ -158,6 +178,7 @@ func mergeRules(dst map[string]detector.RuleConfig, data []byte, source string) 
 func logDetectorConfig(logger *slog.Logger, cfg *config.Detector, rules int) {
 	logger.Info("detector enabled",
 		"rules", rules,
+		"builtin_rules", cfg.BuiltinRulesEnabled(),
 		"rules_enabled", cfg.RulesEnabled,
 		"rules_dir", cfg.RulesDir,
 		"dry_run", cfg.DryRun,

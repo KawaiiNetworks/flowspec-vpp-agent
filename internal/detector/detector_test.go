@@ -724,6 +724,128 @@ rules:
 	}
 }
 
+// An ICMPv6 rule keyed per-type tracks each type as its own instance and emits a
+// drop for only that type — so an echo-request (128) flood does not produce a rule
+// that would also block Neighbor Discovery (135). icmp_code: all is never emitted.
+func TestEngine_ICMPv6PerTypeEmitNDPSafe(t *testing.T) {
+	cfg := `
+rules:
+  - name: icmp6
+    match: { family: ipv6, proto: icmpv6 }
+    aggregate: { proto: exact, src: "/0", dst: "/128", icmp_type: exact, icmp_code: all }
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 100 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 0"
+    flowspec: { action: drop, ttl: 60s }
+    description: "icmpv6 type {{icmp_type}} to {{dst}}"
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(8000, 0)
+	victim := netip.MustParseAddr("2001:db8::1")
+	src := netip.MustParseAddr("2001:db8::99")
+	for i := 0; i < 5; i++ { // echo-request flood
+		engine.Observe(Sample{At: now, Family: flowspec.FamilyIPv6, Src: src, Dst: victim,
+			Proto: protoICMPv6, ICMPType: 128, ICMPCode: 0, PacketLen: 64, SampleRate: 1})
+	}
+	// One Neighbor Solicitation (NDP) to the same victim.
+	engine.Observe(Sample{At: now, Family: flowspec.FamilyIPv6, Src: src, Dst: victim,
+		Proto: protoICMPv6, ICMPType: 135, ICMPCode: 0, PacketLen: 64, SampleRate: 1})
+
+	if got := rules[0].InstanceCount(); got != 2 {
+		t.Fatalf("instance count = %d, want 2 (types 128 and 135 are distinct)", got)
+	}
+	var got128 bool
+	for _, ev := range engine.Tick(now, EvalContext{}) {
+		m := ev.Rule.Match
+		if len(m.ICMPCode) != 0 {
+			t.Fatalf("icmp_code: all should never emit a code, got %+v", m.ICMPCode)
+		}
+		if len(m.ICMPType) == 1 && m.ICMPType[0].EQ && m.ICMPType[0].Value == 128 {
+			got128 = true
+		}
+	}
+	if !got128 {
+		t.Fatal("expected an emitted drop carrying icmp-type 128")
+	}
+}
+
+// match.icmp_type restricts which packets count; non-matching types (and any
+// non-ICMP packet) are ignored.
+func TestEngine_ICMPTypeMatchFilter(t *testing.T) {
+	cfg := `
+rules:
+  - name: echo-only
+    match: { family: ipv6, proto: icmpv6, icmp_type: 128 }
+    aggregate: { proto: exact, src: "/0", dst: "/128", icmp_code: all }
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 100 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 0"
+    flowspec: { action: drop, ttl: 60s }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(8100, 0)
+	victim := netip.MustParseAddr("2001:db8::1")
+	src := netip.MustParseAddr("2001:db8::99")
+	engine.Observe(Sample{At: now, Family: flowspec.FamilyIPv6, Src: src, Dst: victim,
+		Proto: protoICMPv6, ICMPType: 128, PacketLen: 64, SampleRate: 1})
+	engine.Observe(Sample{At: now, Family: flowspec.FamilyIPv6, Src: src, Dst: victim,
+		Proto: protoICMPv6, ICMPType: 135, PacketLen: 64, SampleRate: 1}) // filtered out
+	if got := rules[0].InstanceCount(); got != 1 {
+		t.Fatalf("instance count = %d, want 1 (only type 128 counted)", got)
+	}
+}
+
+// aggregate.icmp_type: all collapses every type into one instance and emits no
+// type constraint (drop all ICMP to the victim).
+func TestEngine_ICMPAggregateAllCollapses(t *testing.T) {
+	cfg := `
+rules:
+  - name: all-icmp
+    match: { family: ipv4, proto: icmp }
+    aggregate: { proto: exact, src: "/0", dst: "/32", icmp_type: all, icmp_code: all }
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 100 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 0"
+    flowspec: { action: drop, ttl: 60s }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(8200, 0)
+	victim := netip.MustParseAddr("203.0.113.5")
+	src := netip.MustParseAddr("198.51.100.1")
+	for _, typ := range []uint8{8, 0} { // echo-request + echo-reply collapse
+		engine.Observe(Sample{At: now, Family: flowspec.FamilyIPv4, Src: src, Dst: victim,
+			Proto: protoICMP, ICMPType: typ, PacketLen: 64, SampleRate: 1})
+	}
+	if got := rules[0].InstanceCount(); got != 1 {
+		t.Fatalf("instance count = %d, want 1 (icmp_type: all collapses)", got)
+	}
+	events := engine.Tick(now, EvalContext{})
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if m := events[0].Rule.Match; len(m.ICMPType) != 0 || len(m.ICMPCode) != 0 {
+		t.Fatalf("icmp type/code should be wildcard, got type=%v code=%v", m.ICMPType, m.ICMPCode)
+	}
+}
+
 func TestCompile_RejectsPortsWithProtoAll(t *testing.T) {
 	cfg := `
 rules:

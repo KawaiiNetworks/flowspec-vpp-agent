@@ -50,14 +50,16 @@ type emitField struct {
 }
 
 type flowSpecAction struct {
-	ttl     time.Duration
-	refresh bool
-	family  emitField
-	proto   emitField
-	src     emitField
-	dst     emitField
-	srcPort emitField
-	dstPort emitField
+	ttl      time.Duration
+	refresh  bool
+	family   emitField
+	proto    emitField
+	src      emitField
+	dst      emitField
+	srcPort  emitField
+	dstPort  emitField
+	icmpType emitField
+	icmpCode emitField
 }
 
 func compileRule(cfg RuleConfig) (*Rule, error) {
@@ -113,6 +115,14 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 	}
 	r.packetLen = cfg.Match.PacketLen
 
+	// --- match: icmp type/code filter ---
+	if r.icmpTypeFilter, err = compileU8List(cfg.Match.ICMPType, "match.icmp_type"); err != nil {
+		return nil, err
+	}
+	if r.icmpCodeFilter, err = compileU8List(cfg.Match.ICMPCode, "match.icmp_code"); err != nil {
+		return nil, err
+	}
+
 	// --- match: tcp flags filter ---
 	if cfg.Match.TCPFlags != "" {
 		r.tcpCare, r.tcpWant, err = parseTCPFlags(cfg.Match.TCPFlags)
@@ -141,6 +151,14 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 	r.dstPortAgg, err = aggPort(cfg.Aggregate.DstPort)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate.dst_port: %w", err)
+	}
+	r.icmpTypeAggAll, err = aggICMP(cfg.Aggregate.ICMPType)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate.icmp_type: %w", err)
+	}
+	r.icmpCodeAggAll, err = aggICMP(cfg.Aggregate.ICMPCode)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate.icmp_code: %w", err)
 	}
 
 	// A FlowSpec port range needs a concrete protocol, so non-wildcard ports
@@ -279,6 +297,7 @@ func compileTCPEmit(s string) (tcpEmitSpec, error) {
 // renders empty, not "missing").
 var descriptorVars = map[string]struct{}{
 	"family": {}, "proto": {}, "src": {}, "dst": {}, "src_port": {}, "dst_port": {},
+	"icmp_type": {}, "icmp_code": {},
 }
 
 func (r *Rule) validateVars(termNames []string) error {
@@ -300,6 +319,7 @@ func (r *Rule) validateVars(termNames []string) error {
 		{"family", r.action.family}, {"proto", r.action.proto},
 		{"src_prefix", r.action.src}, {"dst_prefix", r.action.dst},
 		{"src_port", r.action.srcPort}, {"dst_port", r.action.dstPort},
+		{"icmp_type", r.action.icmpType}, {"icmp_code", r.action.icmpCode},
 	} {
 		if err := checkFlowSpec(c.name, c.f); err != nil {
 			return err
@@ -737,7 +757,42 @@ func compileAction(c FlowSpecConfig) (flowSpecAction, error) {
 	if a.dstPort, err = compileField(c.DstPort); err != nil {
 		return flowSpecAction{}, fmt.Errorf("flowspec.dst_port: %w", err)
 	}
+	if a.icmpType, err = compileField(c.ICMPType); err != nil {
+		return flowSpecAction{}, fmt.Errorf("flowspec.icmp_type: %w", err)
+	}
+	if a.icmpCode, err = compileField(c.ICMPCode); err != nil {
+		return flowSpecAction{}, fmt.Errorf("flowspec.icmp_code: %w", err)
+	}
 	return a, nil
+}
+
+// aggICMP parses an ICMP type/code aggregate: "exact" (default) keeps the concrete
+// value as identity; "all" wildcards it out. Returns whether it is wildcarded.
+func aggICMP(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "exact", "keep":
+		return false, nil
+	case "all", "any":
+		return true, nil
+	default:
+		return false, fmt.Errorf("must be \"exact\" or \"all\", got %q", s)
+	}
+}
+
+// compileU8List validates an IntList of byte-range values (0-255) used by the
+// icmp type/code match filters.
+func compileU8List(vals IntList, field string) ([]uint8, error) {
+	if len(vals) == 0 {
+		return nil, nil
+	}
+	out := make([]uint8, 0, len(vals))
+	for _, v := range vals {
+		if v < 0 || v > 255 {
+			return nil, fmt.Errorf("%s %d out of range 0-255", field, v)
+		}
+		out = append(out, uint8(v))
+	}
+	return out, nil
 }
 
 func compileField(s string) (emitField, error) {

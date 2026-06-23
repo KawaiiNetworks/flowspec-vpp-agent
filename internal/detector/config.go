@@ -49,6 +49,11 @@ type MatchConfig struct {
 	// TCPFlags filters on the TCP flags byte, e.g. "syn !ack". Filter-only for
 	// identity, but it may be carried into the emitted FlowSpec (see FlowSpecConfig).
 	TCPFlags string `yaml:"tcp_flags"`
+	// ICMPType/ICMPCode filter on the ICMP/ICMPv6 type and code (0-255), single
+	// value or list. They only constrain icmp/icmpv6 packets; a rule that sets
+	// either never matches non-ICMP packets.
+	ICMPType IntList `yaml:"icmp_type"`
+	ICMPCode IntList `yaml:"icmp_code"`
 }
 
 // AggregateConfig declares per-field granularity applied to the matched packet's
@@ -66,6 +71,11 @@ type AggregateConfig struct {
 	Dst     string `yaml:"dst"`
 	SrcPort string `yaml:"src_port"`
 	DstPort string `yaml:"dst_port"`
+	// ICMPType/ICMPCode granularity for icmp/icmpv6 packets: "exact" (default,
+	// each type/code is its own instance and is emitted) or "all" (wildcard — not
+	// part of identity, not emitted). Ignored for non-ICMP protocols.
+	ICMPType string `yaml:"icmp_type"`
+	ICMPCode string `yaml:"icmp_code"`
 }
 
 // CompareUint is a filter-only numeric comparison (used by packet_len).
@@ -122,6 +132,10 @@ type FlowSpecConfig struct {
 	// TCPFlags: "" defaults to the match filter; "all"/"any" emits no flag
 	// constraint; otherwise an explicit spec like "syn !ack".
 	TCPFlags string `yaml:"tcp_flags"`
+	// ICMPType/ICMPCode: "" emits the descriptor value (if applicable); "all"/"any"
+	// emits no constraint; otherwise an explicit numeric value (0-255).
+	ICMPType string `yaml:"icmp_type"`
+	ICMPCode string `yaml:"icmp_code"`
 }
 
 // StringList accepts either a scalar string or a sequence of strings in YAML.

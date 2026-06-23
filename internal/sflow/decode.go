@@ -26,8 +26,10 @@ const (
 	etherTypeIPv6 = 0x86dd
 	etherTypeVLAN = 0x8100
 
-	protoTCP = 6
-	protoUDP = 17
+	protoICMP   = 1
+	protoTCP    = 6
+	protoUDP    = 17
+	protoICMPv6 = 58
 )
 
 // Decoder extracts compact detector samples from sFlow v5 datagrams.
@@ -311,6 +313,14 @@ func fillPorts(s *detector.Sample, payload []byte) {
 		}
 		s.SrcPort = binary.BigEndian.Uint16(payload[0:2])
 		s.DstPort = binary.BigEndian.Uint16(payload[2:4])
+	case protoICMP, protoICMPv6:
+		// ICMP type/code are the first two bytes of the L4 header — the same
+		// offset the port fields would occupy.
+		if len(payload) < 2 {
+			return
+		}
+		s.ICMPType = payload[0]
+		s.ICMPCode = payload[1]
 	}
 }
 

@@ -1,0 +1,165 @@
+# Predefined: TCP flood mitigations, victim-side (identity = dst host).
+#
+# Tiering: the per-destination-port SYN rules are the safe default — they emit a
+# narrow "drop syn to victim:port" and carry a large instance pool because the
+# (victim x port) space is wide. Host-wide and flag-based floods (synack/ack/rst)
+# are coarser and more destructive to legitimate TCP, so they sit behind much
+# higher thresholds and a small instance pool.
+#
+# max_instances follows identity fineness: per-port -> 100, host-wide -> 30.
+rules:
+  # --- SYN flood, per destination port (the common, safe default) ---
+  - name: syn-flood-ipv4
+    match: { family: ipv4, proto: tcp, tcp_flags: "syn !ack" }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 100
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 20000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "tcp syn flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
+
+  - name: syn-flood-ipv6
+    match: { family: ipv6, proto: tcp, tcp_flags: "syn !ack" }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: exact }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 100
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 20000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "tcp syn flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
+
+  # --- SYN flood, host-wide emergency (drops SYN to every port of the victim) ---
+  - name: syn-flood-host-ipv4
+    match: { family: ipv4, proto: tcp, tcp_flags: "syn !ack" }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 100000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "host-wide tcp syn flood to {{dst}}, pps={{pps}}"
+
+  - name: syn-flood-host-ipv6
+    match: { family: ipv6, proto: tcp, tcp_flags: "syn !ack" }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 100000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "host-wide tcp syn flood to {{dst}}, pps={{pps}}"
+
+  # --- SYN/ACK reflection (backscatter). Can affect the victim's own outbound TCP
+  # clients, so it is intentionally high-threshold. ---
+  - name: synack-flood-ipv4
+    match: { family: ipv4, proto: tcp, tcp_flags: "syn ack" }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 50000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "tcp syn-ack reflection to {{dst}}, pps={{pps}}"
+
+  - name: synack-flood-ipv6
+    match: { family: ipv6, proto: tcp, tcp_flags: "syn ack" }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 50000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "tcp syn-ack reflection to {{dst}}, pps={{pps}}"
+
+  # --- ACK flood. Mitigating at L3/L4 breaks established TCP, so emergency-only. ---
+  - name: ack-flood-ipv4
+    match: { family: ipv4, proto: tcp, tcp_flags: "ack !syn" }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 200000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 120s, refresh: true }
+    description: "emergency tcp ack flood to {{dst}}, pps={{pps}}"
+
+  - name: ack-flood-ipv6
+    match: { family: ipv6, proto: tcp, tcp_flags: "ack !syn" }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 200000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 120s, refresh: true }
+    description: "emergency tcp ack flood to {{dst}}, pps={{pps}}"
+
+  # --- RST flood ---
+  - name: rst-flood-ipv4
+    match: { family: ipv4, proto: tcp, tcp_flags: "rst" }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 100000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "tcp rst flood to {{dst}}, pps={{pps}}"
+
+  - name: rst-flood-ipv6
+    match: { family: ipv6, proto: tcp, tcp_flags: "rst" }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 100000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "tcp rst flood to {{dst}}, pps={{pps}}"

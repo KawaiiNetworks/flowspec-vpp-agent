@@ -178,11 +178,8 @@ no `enabled` flag. Likewise `vpp_stats` is enabled by the presence of a
 ```yaml
 detector:
   rules_dir: /etc/flowspec-vpp-agent/rules
-  rules_enabled:
-    - dns-reflection
-    - udp-flood-ipv4
-    - syn-flood-ipv4
-    - ssh-scan-ipv4
+  builtin_rules: true        # auto-enable all embedded built-ins (default)
+  rules_enabled: []          # extra rules (e.g. from rules_dir) merged on top
   sflow:
     listen: "0.0.0.0:6343"
   sample_queue: 65536
@@ -198,7 +195,8 @@ detector:
 | ----- | ---- | ------- | ----------- |
 | `dry_run` | bool | `false` | Log each triggered event's description and take no action (no ACLs programmed). |
 | `rules_dir` | string | empty | Optional directory of user rule files (`*.yaml`). Files override built-in rules of the same name. |
-| `rules_enabled` | list | empty | Rule names to activate. **Required** (non-empty). Names resolve against the embedded predefined rules plus `rules_dir`. |
+| `builtin_rules` | bool | `true` | Auto-enable every embedded built-in rule. The effective set is the built-ins (when enabled) merged with `rules_enabled`. |
+| `rules_enabled` | list | empty | Extra rule names to activate, merged with the built-ins — this is how you enable a `rules_dir` rule. With `builtin_rules: false` it instead selects a subset of built-ins. Names resolve against the built-ins plus `rules_dir`. With `builtin_rules: false` and an empty list, the config is rejected (nothing to run). |
 | `sflow.listen` | string | `0.0.0.0:6343` | UDP listen address for sFlow v5 datagrams. |
 | `sample_queue` | int | `65536` | Bounded sample queue (`0` → default). Full queues drop sampled packets instead of growing memory. |
 | `event_queue` | int | `1024` | Bounded detector-event queue (`0` → default). |
@@ -211,8 +209,10 @@ detector:
 Rules live in YAML files, each holding `rules: [ ... ]` with one or more rules. A
 curated set is embedded into the binary at build time (the repository `rules/`
 directory); operators add or override rules by dropping files into `rules_dir`.
-Only the names listed in `rules_enabled` are compiled and run, so a rule needs no
-`enabled` flag.
+By default (`builtin_rules: true`) every built-in is active; `rules_enabled` merges
+in additional rules by name (e.g. ones from `rules_dir`). Set `builtin_rules: false`
+to instead run only the subset named in `rules_enabled`. A rule needs no `enabled`
+flag of its own.
 
 A complete rule with every field written out:
 
@@ -271,6 +271,11 @@ default it is also carried into the emitted FlowSpec, so the drop targets only t
 matching flags (e.g. SYN), sparing established connections. Override emission with
 `flowspec.tcp_flags` (`all` to emit no flag constraint, or an explicit spec).
 
+`icmp_type` / `icmp_code` filter on the ICMP/ICMPv6 type and code (0–255, a value
+or list). They only ever match `icmp`/`icmpv6` packets — a rule that sets either
+never matches non-ICMP traffic. Use them to scope a rule to specific types (e.g.
+count only echo-request floods).
+
 #### aggregate — the instance identity
 
 Every matched packet carries concrete values for all fields. Those values form a
@@ -286,6 +291,7 @@ granularity. Aggregation depends on the field's type:
 | `proto` | categorical | `exact` \| `all` | `exact` |
 | `src`, `dst` | IP prefix | `"/N"` (binary mask; `/0` collapses all) | `/32` or `/128` |
 | `src_port`, `dst_port` | numeric | `exact` \| `all` \| `"LO-HI"` \| `"N"` | `exact` |
+| `icmp_type`, `icmp_code` | numeric (ICMP) | `exact` \| `all` | `exact` |
 
 For ports: `"22-25"` projects **all** matched packets into the fixed range 22–25
 verbatim (no check — use it when `match` already constrained the port and you want
@@ -300,6 +306,14 @@ emitted rule. So you don't need to set ports to `all` on an ICMP rule; just omit
 them. The only compile-time restriction is that a non-wildcard port aggregate
 cannot be combined with `aggregate.proto: all` (a FlowSpec port range needs a
 concrete protocol).
+
+`icmp_type`/`icmp_code` are the ICMP equivalent, applicable only to `icmp`/`icmpv6`
+packets (wildcard for everything else). They default to `exact`, so each type/code
+is its own instance **and is emitted into the drop** — meaning a flood of one
+ICMPv6 type (e.g. echo-request, 128) is dropped without blocking Neighbor Discovery
+(NS/NA/RS/RA, types 133–137), which would otherwise break IPv6 connectivity. Set
+`icmp_type: all` / `icmp_code: all` to wildcard a field (drop all ICMP to the
+victim). The built-in `icmp-flood-*` rules use `icmp_type: exact, icmp_code: all`.
 
 #### history — the per-instance rings
 
@@ -399,18 +413,18 @@ event fires (a zero/absent `sustained` fires on the first true tick).
 
 `action` (`drop`), `ttl` and the TTL `refresh` flag are emission metadata. Each
 match field — `family`, `proto`, `src_prefix`, `dst_prefix`, `src_port`,
-`dst_port` — is optional and **defaults to the descriptor value**. Override a
-field by writing a template (`"{{src}}"`, or a literal), or write `all`/`any` to
-widen it to a wildcard. A field whose descriptor value is a wildcard (e.g. an
-aggregate of `/0` or `all`) emits no constraint. Because identity is the
-descriptor (not the emitted rule), the FlowSpec may legitimately be wider than the
-identity — e.g. detect a host scanning port 22 but block all of its traffic by
-aggregating `proto`/ports to `all`.
+`dst_port`, `icmp_type`, `icmp_code` — is optional and **defaults to the descriptor
+value**. Override a field by writing a template (`"{{src}}"`, or a literal), or
+write `all`/`any` to widen it to a wildcard. A field whose descriptor value is a
+wildcard (e.g. an aggregate of `/0` or `all`) emits no constraint. Because identity
+is the descriptor (not the emitted rule), the FlowSpec may legitimately be wider
+than the identity — e.g. detect a host scanning port 22 but block all of its
+traffic by aggregating `proto`/ports to `all`.
 
 Template variables are the descriptor fields `{{family}}`, `{{proto}}`, `{{src}}`,
-`{{dst}}`, `{{src_port}}`, `{{dst_port}}`; `description` may additionally use
-`{{ingress_if}}` and the trigger term names (e.g. `{{short}}`). An unknown
-variable is rejected at load time.
+`{{dst}}`, `{{src_port}}`, `{{dst_port}}`, `{{icmp_type}}`, `{{icmp_code}}`;
+`description` may additionally use `{{ingress_if}}` and the trigger term names
+(e.g. `{{short}}`). An unknown variable is rejected at load time.
 
 ---
 

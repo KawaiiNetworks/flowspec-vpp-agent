@@ -34,15 +34,10 @@ metrics:                             # [opt] HTTP endpoint
 
 detector:                            # [opt] sFlow/VPP-stats detector; PRESENCE enables it (no enabled flag)
   dry_run: false                     # [opt] default false; true -> log only, no ACL/announce
-  rules_dir: /etc/flowspec-vpp-agent/rules  # [opt] default ""; user rules override built-ins
-  rules_enabled:                     # [req] non-empty; rule names to activate
-    - dns-reflection                 # built-in: DNS reflection
-    - ntp-reflection                 # built-in: NTP reflection
-    - memcached-reflection           # built-in: memcached reflection
-    - udp-flood-ipv4                 # built-in: UDP flood (v4)
-    - syn-flood-ipv4                 # built-in: TCP SYN flood (v4)
-    - icmp-flood-ipv4                # built-in: ICMP flood (v4)
-    - ssh-scan-ipv4                  # built-in: SSH scan (v4)
+  rules_dir: /etc/flowspec-vpp-agent/rules  # [opt] default ""; user rules override built-ins by name
+  builtin_rules: true                # [opt] default true; auto-enable every embedded built-in rule
+  rules_enabled: []                  # [opt] extra rule names to merge in (e.g. rules_dir rules);
+                                     #       set builtin_rules:false + list here to run a subset of built-ins
   sflow:                             # [opt] sFlow collector
     listen: "0.0.0.0:6343"           # [opt] default; sFlow v5 UDP host:port
   vpp_stats:                         # [opt] PRESENCE enables VPP counter polling; omit to disable

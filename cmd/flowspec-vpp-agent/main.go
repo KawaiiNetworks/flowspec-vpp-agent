@@ -58,12 +58,17 @@ func main() {
 	}
 
 	logger, logCloser := logging.New(cfg.Log.Options())
-	defer logCloser.Close()
 	clog := logger.With(logging.KeyScope, logging.ScopeCore)
 	clog.Info("starting flowspec-vpp-agent", "version", version.String())
 
-	if err := run(cfg, logger); err != nil {
+	err = run(cfg, logger)
+	if err != nil {
 		clog.Error("fatal", "error", err)
+	}
+	// Flush the Telegram sink on every exit path — after the fatal log is enqueued,
+	// before os.Exit (which would skip a deferred close).
+	_ = logCloser.Close()
+	if err != nil {
 		os.Exit(1)
 	}
 }

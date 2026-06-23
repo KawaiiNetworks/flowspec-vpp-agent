@@ -152,11 +152,8 @@ metrics:
 ```yaml
 detector:
   rules_dir: /etc/flowspec-vpp-agent/rules
-  rules_enabled:
-    - dns-reflection
-    - udp-flood-ipv4
-    - syn-flood-ipv4
-    - ssh-scan-ipv4
+  builtin_rules: true        # 自动启用全部内置规则（默认）
+  rules_enabled: []          # 额外合并的规则名（例如 rules_dir 里的）
   sflow:
     listen: "0.0.0.0:6343"
   sample_queue: 65536
@@ -172,7 +169,8 @@ detector:
 | ---- | ---- | ------ | ---- |
 | `dry_run` | bool | `false` | 仅记录触发事件的 description，不下发任何 ACL。 |
 | `rules_dir` | string | 空 | 可选的用户规则目录（`*.yaml`）。同名文件覆盖内置规则。 |
-| `rules_enabled` | list | 空 | 要启用的规则名列表，**必填**（非空）。名字在内置预定义规则与 `rules_dir` 中解析。 |
+| `builtin_rules` | bool | `true` | 自动启用全部内置规则。最终生效集合 = 内置规则（启用时）∪ `rules_enabled`。 |
+| `rules_enabled` | list | 空 | 额外启用的规则名，与内置规则**合并** —— 启用 `rules_dir` 里的规则就靠它。设 `builtin_rules: false` 时，它改为「从内置规则里挑子集」。名字在内置规则与 `rules_dir` 中解析。`builtin_rules: false` 且此项为空会被拒绝（没规则可跑）。 |
 | `sflow.listen` | string | `0.0.0.0:6343` | sFlow v5 UDP 监听地址。 |
 | `sample_queue` | int | `65536` | 有界 sample 队列（`0` → 用默认）；处理不过来时丢采样，不增长内存。 |
 | `event_queue` | int | `1024` | 有界事件队列（`0` → 用默认）。 |
@@ -184,7 +182,9 @@ detector:
 
 规则放在 YAML 文件里，每个文件含 `rules: [ ... ]`（一个或多个规则）。一套精选规则在
 编译时内嵌进二进制（仓库的 `rules/` 目录）；运维可在 `rules_dir` 放文件来新增或覆盖。
-只有 `rules_enabled` 列出的名字会被编译运行，因此规则本身不需要 `enabled` 字段。
+默认（`builtin_rules: true`）全部内置规则生效；`rules_enabled` 按名字合并进额外规则（例如
+`rules_dir` 里的）。设 `builtin_rules: false` 则只跑 `rules_enabled` 列出的子集。规则本身
+不需要 `enabled` 字段。
 
 把每个字段都写全的完整规则：
 
@@ -239,6 +239,10 @@ rules:
 使丢弃只针对匹配的标志（如 SYN）,从而保留已建立的连接。可用 `flowspec.tcp_flags` 覆盖下发
 （`all` = 不下发标志约束,或写明确的标志）。
 
+`icmp_type` / `icmp_code` 过滤 ICMP/ICMPv6 的 type 与 code（0–255,单值或列表）。它们**只**匹配
+`icmp`/`icmpv6` 包——设了任一项的规则永远不匹配非 ICMP 流量。用它把规则限定到特定类型(例如只统计
+echo-request flood)。
+
 #### aggregate —— 实例身份
 
 每个命中包都带着所有字段的具体值。这些值组成一个可比较的*描述符*；**描述符相同即同一实例**，
@@ -251,6 +255,7 @@ rules:
 | `proto` | 分类 | `exact` \| `all` | `exact` |
 | `src`、`dst` | IP 前缀 | `"/N"`（二进制掩码；`/0` 全聚合） | `/32` 或 `/128` |
 | `src_port`、`dst_port` | 数字 | `exact` \| `all` \| `"LO-HI"` \| `"N"` | `exact` |
+| `icmp_type`、`icmp_code` | 数字（ICMP） | `exact` \| `all` | `exact` |
 
 端口的几种形式：`"22-25"` 把**所有**命中包照抄投影到固定范围 22–25（不校验——适用于 `match`
 已限定端口、这里照抄的场景）；`"N"` 是宽度 N 的向下取整分桶,如 `"100"` 时端口 101 落到
@@ -261,6 +266,12 @@ rules:
 都按"端口不适用"处理:端口字段变为通配,既不参与身份、也不下发。所以 ICMP 规则**不需要**把端口
 写成 `all`,直接省略即可。编译期唯一的限制是:非通配端口不能和 `aggregate.proto: all` 同时用
 (FlowSpec 端口范围需要具体协议)。
+
+`icmp_type`/`icmp_code` 是 ICMP 版的对应物,只对 `icmp`/`icmpv6` 包适用(其余协议恒为通配)。默认
+`exact`,所以每个 type/code 是独立实例**且会下发进 drop**——于是某个 ICMPv6 类型(如 echo-request
+128)被 flood 时,只丢这个类型,不会误伤邻居发现(NS/NA/RS/RA,类型 133–137,否则会断 IPv6)。设
+`icmp_type: all` / `icmp_code: all` 可把对应字段通配(丢往受害者的全部 ICMP)。内置 `icmp-flood-*`
+规则用的是 `icmp_type: exact, icmp_code: all`。
 
 #### history —— 每实例的环形缓冲
 
@@ -335,14 +346,15 @@ rules:
 #### flowspec —— 下发什么
 
 `action`（`drop`）、`ttl` 与 TTL 的 `refresh` 标志是下发元数据。每个 match 字段——`family`、
-`proto`、`src_prefix`、`dst_prefix`、`src_port`、`dst_port`——均可选,且**默认取描述符的值**。
-写模板（`"{{src}}"` 或字面量）可覆盖,写 `all`/`any` 可放宽为通配。描述符值本身为通配的字段
-（如聚合为 `/0` 或 `all`）不下发该约束。由于身份是描述符（而非下发规则）,FlowSpec 可以合法地
-比身份更宽——例如检测某主机扫 22 端口,但通过把 `proto`/端口聚合为 `all` 来封禁它的全部流量。
+`proto`、`src_prefix`、`dst_prefix`、`src_port`、`dst_port`、`icmp_type`、`icmp_code`——均可选,
+且**默认取描述符的值**。写模板（`"{{src}}"` 或字面量）可覆盖,写 `all`/`any` 可放宽为通配。描述符
+值本身为通配的字段（如聚合为 `/0` 或 `all`）不下发该约束。由于身份是描述符（而非下发规则）,
+FlowSpec 可以合法地比身份更宽——例如检测某主机扫 22 端口,但通过把 `proto`/端口聚合为 `all` 来封禁
+它的全部流量。
 
 模板变量为描述符字段 `{{family}}`、`{{proto}}`、`{{src}}`、`{{dst}}`、`{{src_port}}`、
-`{{dst_port}}`；`description` 还可用 `{{ingress_if}}` 与触发 term 名（如 `{{short}}`）。未知
-变量在加载时报错。
+`{{dst_port}}`、`{{icmp_type}}`、`{{icmp_code}}`；`description` 还可用 `{{ingress_if}}` 与触发
+term 名（如 `{{short}}`）。未知变量在加载时报错。
 
 ---
 

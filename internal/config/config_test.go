@@ -62,8 +62,8 @@ bgp:
 detector:
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
-    - dns-reflection
-    - ssh-scan
+    - udp-reflection-ipv4
+    - tcp-scan-ipv4
   sflow:
     listen: "127.0.0.1:6343"
   sample_queue: 1024
@@ -83,7 +83,7 @@ detector:
 	if cfg.Detector.VPPStats.Interval.Duration().String() != "2s" {
 		t.Fatalf("stats interval = %s, want 2s", cfg.Detector.VPPStats.Interval.Duration())
 	}
-	if len(cfg.Detector.RulesEnabled) != 2 || cfg.Detector.RulesEnabled[0] != "dns-reflection" {
+	if len(cfg.Detector.RulesEnabled) != 2 || cfg.Detector.RulesEnabled[0] != "udp-reflection-ipv4" {
 		t.Fatalf("rules_enabled = %v", cfg.Detector.RulesEnabled)
 	}
 	if cfg.Detector.RulesDir != "/etc/flowspec-vpp-agent/rules" {
@@ -95,7 +95,7 @@ detector:
 func TestParse_DetectorDefaults(t *testing.T) {
 	cfg, err := Parse([]byte(`
 detector:
-  rules_enabled: [dns-reflection]
+  rules_enabled: [udp-reflection-ipv4]
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ bgp:
 func TestParse_DetectorOnlyNoBGP(t *testing.T) {
 	cfg, err := Parse([]byte(`
 detector:
-  rules_enabled: [dns-reflection]
+  rules_enabled: [udp-reflection-ipv4]
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -181,21 +181,21 @@ func TestValidate_Errors(t *testing.T) {
 		"bgp:\n  listen: '[not-ip]:10179'\n  router_id: 192.0.2.1\n",
 		"bgp:\n  router_id: 2001:db8::1\n",
 		"metrics:\n  listen: bad-port\n",
-		"detector: {}\n", // present but no rules_enabled
+		"detector:\n  builtin_rules: false\n", // builtins off + no rules_enabled => nothing to run
 		"detector:\n  rules_enabled: [x]\n  sflow:\n    listen: bad\n",
 		"detector:\n  rules_enabled: [x]\n  sample_queue: -1\n",
 		"detector:\n  rules_enabled: [x]\n  event_queue: -1\n",
 		"acl:\n  interfaces:\n    mode: bogus\n",
 		"acl:\n  interfaces:\n    mode: list\n", // list mode without list
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",
-		"bgp:\n  peers:\n    - address: 1.2.3.4\n", // missing peer_asn
+		"bgp:\n  peers:\n    - address: 1.2.3.4\n",                                                             // missing peer_asn
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n      peer_asn: 1\n      receive: false\n      send: false\n", // no-op peer
-		"vpp:\n  socket: /run/vpp/api.sock\n",                                       // nothing to do: no peers, no detector
-		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    level: bogus\n",      // bad log level
-		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    format: bogus\n",     // bad log format
-		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    scope: [nonsense]\n", // unknown scope
-		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    chat_id: c\n",      // telegram missing bot_token
-		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    bot_token: t\n",    // telegram missing chat_id
+		"vpp:\n  socket: /run/vpp/api.sock\n",                                                                  // nothing to do: no peers, no detector
+		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    level: bogus\n",                                 // bad log level
+		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    format: bogus\n",                                // bad log format
+		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    scope: [nonsense]\n",                            // unknown scope
+		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    chat_id: c\n",                                 // telegram missing bot_token
+		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    bot_token: t\n",                               // telegram missing chat_id
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {

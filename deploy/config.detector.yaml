@@ -12,15 +12,8 @@ metrics:
   listen: "0.0.0.0:9469"
 
 detector:
-  # Built-in rules only (no rules_dir).
-  rules_enabled:
-    - dns-reflection
-    - ntp-reflection
-    - memcached-reflection
-    - udp-flood-ipv4
-    - syn-flood-ipv4
-    - icmp-flood-ipv4
-    - ssh-scan-ipv4
+  # All built-in rules are auto-enabled (builtin_rules defaults to true); no
+  # rules_dir, so nothing extra to merge via rules_enabled.
   sflow:
     listen: "0.0.0.0:6343"
   vpp_stats:

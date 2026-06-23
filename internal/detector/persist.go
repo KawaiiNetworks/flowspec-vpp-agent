@@ -61,6 +61,11 @@ type DescriptorState struct {
 	SrcPortHi uint16
 	DstPortLo uint16
 	DstPortHi uint16
+
+	IcmpType     uint8
+	IcmpCode     uint8
+	IcmpTypeWild bool
+	IcmpCodeWild bool
 }
 
 type SlotState struct {
@@ -167,15 +172,19 @@ func (d descriptor) export() DescriptorState {
 	src, _ := d.src.MarshalBinary()
 	dst, _ := d.dst.MarshalBinary()
 	return DescriptorState{
-		Family:    uint8(d.family),
-		Proto:     d.proto,
-		ProtoWild: d.protoWild,
-		Src:       src,
-		Dst:       dst,
-		SrcPortLo: d.srcPortLo,
-		SrcPortHi: d.srcPortHi,
-		DstPortLo: d.dstPortLo,
-		DstPortHi: d.dstPortHi,
+		Family:       uint8(d.family),
+		Proto:        d.proto,
+		ProtoWild:    d.protoWild,
+		Src:          src,
+		Dst:          dst,
+		SrcPortLo:    d.srcPortLo,
+		SrcPortHi:    d.srcPortHi,
+		DstPortLo:    d.dstPortLo,
+		DstPortHi:    d.dstPortHi,
+		IcmpType:     d.icmpType,
+		IcmpCode:     d.icmpCode,
+		IcmpTypeWild: d.icmpTypeWild,
+		IcmpCodeWild: d.icmpCodeWild,
 	}
 }
 
@@ -192,14 +201,18 @@ func (d DescriptorState) toDescriptor() (descriptor, bool) {
 		}
 	}
 	return descriptor{
-		family:    flowspec.Family(d.Family),
-		proto:     d.Proto,
-		protoWild: d.ProtoWild,
-		src:       src,
-		dst:       dst,
-		srcPortLo: d.SrcPortLo,
-		srcPortHi: d.SrcPortHi,
-		dstPortLo: d.DstPortLo,
-		dstPortHi: d.DstPortHi,
+		family:       flowspec.Family(d.Family),
+		proto:        d.Proto,
+		protoWild:    d.ProtoWild,
+		src:          src,
+		dst:          dst,
+		srcPortLo:    d.SrcPortLo,
+		srcPortHi:    d.SrcPortHi,
+		dstPortLo:    d.DstPortLo,
+		dstPortHi:    d.DstPortHi,
+		icmpType:     d.IcmpType,
+		icmpCode:     d.IcmpCode,
+		icmpTypeWild: d.IcmpTypeWild,
+		icmpCodeWild: d.IcmpCodeWild,
 	}, true
 }

@@ -1,6 +1,18 @@
 package detector
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
+
+// icmpSnap renders an instance's icmp type/code for /status: empty (omitted) when
+// the field is not applicable to this descriptor.
+func icmpSnap(v uint8, wild bool) string {
+	if wild {
+		return ""
+	}
+	return strconv.Itoa(int(v))
+}
 
 // EngineSnapshot is a point-in-time, JSON-friendly view of every rule's live
 // instance state. It is plain data (no pointers into engine internals) so it can
@@ -29,6 +41,8 @@ type InstanceSnapshot struct {
 	Dst       string             `json:"dst"`
 	SrcPort   string             `json:"src_port"`
 	DstPort   string             `json:"dst_port"`
+	ICMPType  string             `json:"icmp_type,omitempty"`
+	ICMPCode  string             `json:"icmp_code,omitempty"`
 	IngressIf string             `json:"ingress_if,omitempty"`
 	LastSeen  time.Time          `json:"last_seen"`
 	PPS       float64            `json:"pps"`
@@ -82,6 +96,8 @@ func (r *Rule) instanceSnapshot(inst *instance, now time.Time, ctx EvalContext) 
 		Dst:       field("dst"),
 		SrcPort:   field("src_port"),
 		DstPort:   field("dst_port"),
+		ICMPType:  icmpSnap(inst.key.icmpType, inst.key.icmpTypeWild),
+		ICMPCode:  icmpSnap(inst.key.icmpCode, inst.key.icmpCodeWild),
 		IngressIf: inst.lastIngressIf,
 		LastSeen:  inst.lastSeen,
 		PPS:       inst.fine.rate(now, 1, metricPPS),

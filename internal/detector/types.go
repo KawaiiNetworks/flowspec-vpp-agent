@@ -41,6 +41,8 @@ type Sample struct {
 	DstPort    uint16
 	PacketLen  uint16
 	TCPFlags   uint8
+	ICMPType   uint8 // ICMP/ICMPv6 type byte (meaningful only when Proto is icmp/icmpv6)
+	ICMPCode   uint8 // ICMP/ICMPv6 code byte
 	IngressIf  string
 	SampleRate uint32
 }
@@ -115,6 +117,15 @@ type descriptor struct {
 	srcPortHi uint16
 	dstPortLo uint16
 	dstPortHi uint16
+
+	// ICMP type/code identity, applicable only when proto is icmp/icmpv6. For any
+	// other proto (or a wildcarded proto) both are "not applicable": wild is set,
+	// so they neither split the identity nor get emitted. wild also distinguishes
+	// "not applicable" from a concrete type/code of 0 (e.g. echo-reply).
+	icmpType     uint8
+	icmpCode     uint8
+	icmpTypeWild bool
+	icmpCodeWild bool
 }
 
 // hash returns a 64-bit FNV-1a hash of the descriptor, used to key the
@@ -147,7 +158,18 @@ func (d descriptor) hash() uint64 {
 		mix(byte(p))
 		mix(byte(p >> 8))
 	}
+	mix(d.icmpType)
+	mix(d.icmpCode)
+	mix(boolByte(d.icmpTypeWild))
+	mix(boolByte(d.icmpCodeWild))
 	return h
+}
+
+func boolByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // metricKind selects which signal a trigger term aggregates.

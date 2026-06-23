@@ -93,9 +93,14 @@ type Metrics struct {
 // loaded from the embedded predefined set plus an optional runtime directory;
 // RulesEnabled selects which (by name) are activated.
 type Detector struct {
-	DryRun       bool      `yaml:"dry_run"`       // log triggered events; take no action
-	RulesDir     string    `yaml:"rules_dir"`     // optional dir of user rule files (*.yaml)
-	RulesEnabled []string  `yaml:"rules_enabled"` // rule names to activate
+	DryRun   bool   `yaml:"dry_run"`   // log triggered events; take no action
+	RulesDir string `yaml:"rules_dir"` // optional dir of user rule files (*.yaml)
+	// BuiltinRules auto-enables the embedded built-in rule set (default true). The
+	// effective set is the built-ins (when enabled) merged with RulesEnabled, so
+	// rules_enabled is how you add rules_dir rules — or, with builtin_rules off,
+	// how you pick a subset of built-ins. Pointer so omitted defaults to true.
+	BuiltinRules *bool     `yaml:"builtin_rules"`
+	RulesEnabled []string  `yaml:"rules_enabled"` // extra rule names to activate (merged with built-ins)
 	SFlow        SFlow     `yaml:"sflow"`
 	VPPStats     *VPPStats `yaml:"vpp_stats"` // present => poll VPP interface counters
 	SampleQueue  int       `yaml:"sample_queue"`
@@ -131,6 +136,12 @@ func (c Config) DetectorEnabled() bool { return c.Detector != nil }
 // VPPStatsEnabled reports whether VPP interface-counter polling is on, i.e. a
 // `vpp_stats:` block is present under the detector.
 func (d *Detector) VPPStatsEnabled() bool { return d != nil && d.VPPStats != nil }
+
+// BuiltinRulesEnabled reports whether the embedded built-in rules are auto-enabled
+// (merged with rules_enabled). Omitted defaults to true.
+func (d *Detector) BuiltinRulesEnabled() bool {
+	return d != nil && (d.BuiltinRules == nil || *d.BuiltinRules)
+}
 
 // Log configures the logging sinks. stderr is always active (defaulting to
 // level info, scope all, format text); telegram is enabled only when present.
@@ -361,8 +372,8 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.DetectorEnabled() {
-		if len(c.Detector.RulesEnabled) == 0 {
-			return fmt.Errorf("detector requires a non-empty rules_enabled list")
+		if !c.Detector.BuiltinRulesEnabled() && len(c.Detector.RulesEnabled) == 0 {
+			return fmt.Errorf("detector has builtin_rules: false and an empty rules_enabled — no rules to run")
 		}
 		if c.Detector.SFlow.Listen == "" {
 			return fmt.Errorf("detector.sflow.listen must be set")

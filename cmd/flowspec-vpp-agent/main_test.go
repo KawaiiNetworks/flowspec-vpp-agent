@@ -39,13 +39,60 @@ func TestSplitListen_IPv6(t *testing.T) {
 	}
 }
 
+func boolp(b bool) *bool { return &b }
+
 func TestCompileLocalRulesBuiltin(t *testing.T) {
-	rules, err := compileDetectorRules(&config.Detector{RulesEnabled: []string{"udp-flood-ipv4"}})
+	rules, err := compileDetectorRules(&config.Detector{BuiltinRules: boolp(false), RulesEnabled: []string{"udp-flood-ipv4"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rules) != 1 || rules[0].Name() != "udp-flood-ipv4" {
 		t.Fatalf("rules = %+v", rules)
+	}
+}
+
+// builtin_rules defaults to true: omitting it (and rules_enabled) enables all
+// built-ins; rules_enabled merges extra (rules_dir) rules on top.
+func TestCompileDetectorRules_BuiltinToggle(t *testing.T) {
+	builtin, err := loadEmbeddedRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nBuiltin := len(builtin)
+	if nBuiltin == 0 {
+		t.Fatal("no embedded rules")
+	}
+
+	// Default (builtin_rules omitted => true), empty rules_enabled => all built-ins.
+	rules, err := compileDetectorRules(&config.Detector{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != nBuiltin {
+		t.Fatalf("default: got %d rules, want all %d built-ins", len(rules), nBuiltin)
+	}
+
+	// builtin_rules: true (default) + a user rule from rules_dir => built-ins + 1.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "u.yaml"), []byte(`
+rules:
+  - name: user-extra
+    match: { family: ipv4, proto: udp }
+    aggregate: { src: "/32" }
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 2 }
+    trigger:
+      terms: { short: { metric: pps, window: 1s } }
+      expr: "short > 1"
+    flowspec: { action: drop, ttl: 10s, src_prefix: "{{src}}" }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules, err = compileDetectorRules(&config.Detector{RulesDir: dir, RulesEnabled: []string{"user-extra"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != nBuiltin+1 {
+		t.Fatalf("merge: got %d rules, want %d (built-ins + user-extra)", len(rules), nBuiltin+1)
 	}
 }
 
@@ -95,7 +142,7 @@ rules:
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rules, err := compileDetectorRules(&config.Detector{RulesDir: dir, RulesEnabled: []string{"file-rule"}})
+	rules, err := compileDetectorRules(&config.Detector{BuiltinRules: boolp(false), RulesDir: dir, RulesEnabled: []string{"file-rule"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +185,7 @@ rules:
 	}
 
 	// Disabled stats -> error naming the offending rule.
-	_, err := compileDetectorRules(&config.Detector{RulesDir: dir, RulesEnabled: []string{"vpp-rule"}})
+	_, err := compileDetectorRules(&config.Detector{BuiltinRules: boolp(false), RulesDir: dir, RulesEnabled: []string{"vpp-rule"}})
 	if err == nil {
 		t.Fatal("expected error: vpp.* metric with vpp_stats disabled")
 	}
@@ -148,7 +195,7 @@ rules:
 
 	// Enabled stats -> compiles.
 	rules, err := compileDetectorRules(&config.Detector{
-		RulesDir: dir, RulesEnabled: []string{"vpp-rule"},
+		BuiltinRules: boolp(false), RulesDir: dir, RulesEnabled: []string{"vpp-rule"},
 		VPPStats: &config.VPPStats{},
 	})
 	if err != nil {
@@ -184,7 +231,7 @@ rules:
 	// 10s is covered by the default fine ring (1s/5m).
 	write("10s")
 	if _, err := compileDetectorRules(&config.Detector{
-		RulesDir: dir, RulesEnabled: []string{"win-rule"}, VPPStats: &config.VPPStats{},
+		BuiltinRules: boolp(false), RulesDir: dir, RulesEnabled: []string{"win-rule"}, VPPStats: &config.VPPStats{},
 	}); err != nil {
 		t.Fatalf("10s window should be covered: %v", err)
 	}
@@ -192,7 +239,7 @@ rules:
 	// 90 days exceeds every default ring span.
 	write("2160h")
 	_, err := compileDetectorRules(&config.Detector{
-		RulesDir: dir, RulesEnabled: []string{"win-rule"}, VPPStats: &config.VPPStats{},
+		BuiltinRules: boolp(false), RulesDir: dir, RulesEnabled: []string{"win-rule"}, VPPStats: &config.VPPStats{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "win-rule") {
 		t.Fatalf("expected coverage error naming the rule, got: %v", err)

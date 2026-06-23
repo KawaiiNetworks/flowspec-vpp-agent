@@ -20,24 +20,28 @@ type Rule struct {
 	description *template
 
 	// match filters (a zero/empty filter imposes no constraint)
-	family        flowspec.Family
-	familySet     bool
-	protoFilter   []uint8
-	srcFilter     netip.Prefix
-	dstFilter     netip.Prefix
-	srcPortFilter []uint16
-	dstPortFilter []uint16
-	packetLen     CompareUint
-	tcpCare       uint8 // match filter: bits we test (0 = no tcp-flags filter)
-	tcpWant       uint8 // match filter: required bit values within tcpCare
+	family         flowspec.Family
+	familySet      bool
+	protoFilter    []uint8
+	srcFilter      netip.Prefix
+	dstFilter      netip.Prefix
+	srcPortFilter  []uint16
+	dstPortFilter  []uint16
+	packetLen      CompareUint
+	tcpCare        uint8   // match filter: bits we test (0 = no tcp-flags filter)
+	tcpWant        uint8   // match filter: required bit values within tcpCare
+	icmpTypeFilter []uint8 // match filter on ICMP type (empty = no constraint)
+	icmpCodeFilter []uint8 // match filter on ICMP code
 
 	// descriptor granularity (aggregate). Every field is always part of the
 	// identity; these control its resolution. *MaskBits: -1 = full host, 0 = all.
-	protoWild   bool
-	srcMaskBits int
-	dstMaskBits int
-	srcPortAgg  portAgg
-	dstPortAgg  portAgg
+	protoWild      bool
+	srcMaskBits    int
+	dstMaskBits    int
+	srcPortAgg     portAgg
+	dstPortAgg     portAgg
+	icmpTypeAggAll bool // aggregate.icmp_type: all -> type wildcarded out of identity
+	icmpCodeAggAll bool // aggregate.icmp_code: all
 
 	// trigger
 	terms     []*term
@@ -176,6 +180,19 @@ func (r *Rule) matches(s Sample) bool {
 	if r.tcpCare != 0 && s.TCPFlags&r.tcpCare != r.tcpWant {
 		return false
 	}
+	// ICMP type/code filter: only icmp/icmpv6 packets can satisfy it, so a rule
+	// that sets either never matches non-ICMP traffic.
+	if len(r.icmpTypeFilter) > 0 || len(r.icmpCodeFilter) > 0 {
+		if s.Proto != protoICMP && s.Proto != protoICMPv6 {
+			return false
+		}
+		if len(r.icmpTypeFilter) > 0 && !containsU8(r.icmpTypeFilter, s.ICMPType) {
+			return false
+		}
+		if len(r.icmpCodeFilter) > 0 && !containsU8(r.icmpCodeFilter, s.ICMPCode) {
+			return false
+		}
+	}
 	pl := uint64(s.PacketLen)
 	if r.packetLen.LT != 0 && pl >= r.packetLen.LT {
 		return false
@@ -212,6 +229,24 @@ func (r *Rule) descriptorFor(s Sample) descriptor {
 	} else {
 		d.srcPortLo, d.srcPortHi = 0, 65535
 		d.dstPortLo, d.dstPortHi = 0, 65535
+	}
+	// ICMP type/code mirror the port logic but apply to icmp/icmpv6. Exact (the
+	// default) makes each type/code its own instance — so a flood of one type is
+	// dropped without touching the others (e.g. ICMPv6 NDP types 133-137 survive an
+	// echo-request flood). "all" wildcards the field; non-ICMP packets are N/A.
+	if !r.protoWild && (s.Proto == protoICMP || s.Proto == protoICMPv6) {
+		if r.icmpTypeAggAll {
+			d.icmpTypeWild = true
+		} else {
+			d.icmpType = s.ICMPType
+		}
+		if r.icmpCodeAggAll {
+			d.icmpCodeWild = true
+		} else {
+			d.icmpCode = s.ICMPCode
+		}
+	} else {
+		d.icmpTypeWild, d.icmpCodeWild = true, true
 	}
 	return d
 }
@@ -360,6 +395,17 @@ func (r *Rule) buildFlowSpec(d descriptor) (flowspec.Rule, error) {
 		m.TCPFlags = tcpFlagOps(care, want)
 	}
 
+	if ops, err := r.emitICMP(r.action.icmpType, d.icmpType, d.icmpTypeWild, d); err != nil {
+		return flowspec.Rule{}, err
+	} else {
+		m.ICMPType = ops
+	}
+	if ops, err := r.emitICMP(r.action.icmpCode, d.icmpCode, d.icmpCodeWild, d); err != nil {
+		return flowspec.Rule{}, err
+	} else {
+		m.ICMPCode = ops
+	}
+
 	return flowspec.Rule{
 		Family: fam,
 		Match:  m,
@@ -410,6 +456,27 @@ func (r *Rule) emitPort(f emitField, d descriptor, isSrc bool) ([]flowspec.Numer
 			return nil, nil
 		}
 		return portRangeOps(lo, hi), nil
+	}
+}
+
+// emitICMP produces the ICMP type/code constraint for the synthetic FlowSpec:
+// wildcard emits nothing; a template parses an explicit value; otherwise the
+// descriptor value is emitted unless it is not applicable (wild).
+func (r *Rule) emitICMP(f emitField, val uint8, wild bool, d descriptor) ([]flowspec.NumericOp, error) {
+	switch f.mode {
+	case emitWildcard:
+		return nil, nil
+	case emitTemplate:
+		v, err := strconv.ParseUint(strings.TrimSpace(r.renderField(f, d)), 10, 8)
+		if err != nil {
+			return nil, err
+		}
+		return []flowspec.NumericOp{{EQ: true, Value: v}}, nil
+	default: // emitDefault
+		if wild {
+			return nil, nil
+		}
+		return []flowspec.NumericOp{{EQ: true, Value: uint64(val)}}, nil
 	}
 }
 
@@ -470,6 +537,16 @@ func (r *Rule) resolveDescriptorVar(d descriptor, name string) (string, bool) {
 			return "any", true
 		}
 		return portString(d.dstPortLo, d.dstPortHi), true
+	case "icmp_type":
+		if d.icmpTypeWild {
+			return "any", true
+		}
+		return strconv.Itoa(int(d.icmpType)), true
+	case "icmp_code":
+		if d.icmpCodeWild {
+			return "any", true
+		}
+		return strconv.Itoa(int(d.icmpCode)), true
 	}
 	return "", false
 }
@@ -492,6 +569,15 @@ func (r *Rule) descriptorString(d descriptor) string {
 	b.WriteString(portString(d.srcPortLo, d.srcPortHi))
 	b.WriteString("|dst_port=")
 	b.WriteString(portString(d.dstPortLo, d.dstPortHi))
+	// Append icmp type/code only when applicable, so non-ICMP keys are unchanged.
+	if !d.icmpTypeWild {
+		b.WriteString("|icmp_type=")
+		b.WriteString(strconv.Itoa(int(d.icmpType)))
+	}
+	if !d.icmpCodeWild {
+		b.WriteString("|icmp_code=")
+		b.WriteString(strconv.Itoa(int(d.icmpCode)))
+	}
 	return b.String()
 }
 

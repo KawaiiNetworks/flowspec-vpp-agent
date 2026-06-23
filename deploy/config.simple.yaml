@@ -7,14 +7,6 @@ metrics:
 
 detector:
   dry_run: true
-  rules_enabled:
-    - dns-reflection
-    - ntp-reflection
-    - memcached-reflection
-    - udp-flood-ipv4
-    - syn-flood-ipv4
-    - icmp-flood-ipv4
-    - ssh-scan-ipv4
   sflow:
     listen: "0.0.0.0:6343"
   vpp_stats:

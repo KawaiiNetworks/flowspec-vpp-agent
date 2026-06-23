@@ -43,6 +43,34 @@ func TestDecoderDecodeRawIPv4UDP(t *testing.T) {
 	}
 }
 
+// The decoder pulls ICMP/ICMPv6 type and code from the same L4 offset it reads
+// ports from, for both address families.
+func TestDecodeICMPTypeCode(t *testing.T) {
+	// IPv4 + ICMP echo-request (type 8, code 0).
+	v4 := make([]byte, 20+4)
+	v4[0] = 0x45
+	binary.BigEndian.PutUint16(v4[2:4], uint16(len(v4)))
+	v4[9] = protoICMP
+	copy(v4[12:16], []byte{198, 51, 100, 1})
+	copy(v4[16:20], []byte{203, 0, 113, 1})
+	v4[20], v4[21] = 8, 0 // type, code
+	if s, ok := decodeIPv4(v4); !ok || s.Proto != protoICMP || s.ICMPType != 8 || s.ICMPCode != 0 {
+		t.Fatalf("v4 icmp = ok %v proto %d type %d code %d", ok, s.Proto, s.ICMPType, s.ICMPCode)
+	}
+
+	// IPv6 + ICMPv6 neighbor solicitation (type 135, code 0).
+	v6 := make([]byte, 40+4)
+	v6[0] = 0x60
+	binary.BigEndian.PutUint16(v6[4:6], 4) // payload length
+	v6[6] = protoICMPv6
+	copy(v6[8:24], netip.MustParseAddr("2001:db8::99").AsSlice())
+	copy(v6[24:40], netip.MustParseAddr("2001:db8::1").AsSlice())
+	v6[40], v6[41] = 135, 0 // type, code
+	if s, ok := decodeIPv6(v6); !ok || s.Proto != protoICMPv6 || s.ICMPType != 135 || s.ICMPCode != 0 {
+		t.Fatalf("v6 icmp = ok %v proto %d type %d code %d", ok, s.Proto, s.ICMPType, s.ICMPCode)
+	}
+}
+
 func buildDatagram() []byte {
 	var b builder
 	b.u32(datagramVersion5)

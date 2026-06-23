@@ -7,6 +7,11 @@ services:
     image: kawaiinetworks/flowspec-vpp-agent:main
     restart: unless-stopped
 
+    # On stop the agent catches SIGTERM, dumps state (persist) and removes its VPP
+    # ACLs before exiting. Give it headroom over Docker's 10s default so a slow VPP
+    # cleanup (bounded 5s) plus a Telegram flush can finish before SIGKILL.
+    stop_grace_period: 30s
+
     # VPP binary API + stats socket both live under /run/vpp.
     volumes:
       - /run/vpp:/run/vpp:z          # podman + SELinux needs :z; plain docker can drop it

@@ -1,35 +1,56 @@
 # Predefined: ICMP flood (ping flood) aimed at a victim. Identity is the VICTIM
-# (dst). Triggers on packets/sec and drops ICMP to the victim. ICMP has no ports,
-# so the emitted rule is simply "drop icmp -> victim".
+# (dst) plus the ICMP *type* (code wildcarded), so the emitted rule drops only the
+# flooding type — e.g. echo-request — and leaves other control types intact. This
+# matters most for ICMPv6, where blanket-dropping ICMP to a host would also kill
+# Neighbor Discovery (NS/NA/RS/RA, types 133-137) and break IPv6 connectivity.
+#
+# So there is deliberately NO host-wide ICMPv6 emergency rule. For IPv4 (no NDP)
+# a host-wide emergency is included. max_instances: per-type -> 50, emergency -> 30.
 rules:
   - name: icmp-flood-ipv4
     match: { family: ipv4, proto: icmp }
-    aggregate: { proto: exact, src: "/0", dst: "/32" }   # ICMP has no ports; they don't apply
+    aggregate: { proto: exact, src: "/0", dst: "/32", icmp_type: exact, icmp_code: all }
     rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
-      medium: { resolution: 1m, duration: 1d }
-      max_instances: 100
+      max_instances: 50
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 20000"     # 20 k ICMP/s to one victim
+      expr: "pps > 20000"     # 20 k ICMP/s of one type to one victim
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "icmp flood to {{dst}}, pps={{pps}}"
+    description: "icmp type {{icmp_type}} flood to {{dst}}, pps={{pps}}"
 
   - name: icmp-flood-ipv6
     match: { family: ipv6, proto: icmpv6 }
-    aggregate: { proto: exact, src: "/0", dst: "/128" }  # ICMP has no ports; they don't apply
+    # Per-type identity keeps NDP (types 133-137) alive during an echo flood.
+    aggregate: { proto: exact, src: "/0", dst: "/128", icmp_type: exact, icmp_code: all }
     rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
-      medium: { resolution: 1m, duration: 1d }
-      max_instances: 100
+      max_instances: 50
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 20000"     # 20 k ICMP/s to one victim
+      expr: "pps > 20000"     # 20 k ICMPv6/s of one type to one victim
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "icmpv6 flood to {{dst}}, pps={{pps}}"
+    description: "icmpv6 type {{icmp_type}} flood to {{dst}}, pps={{pps}}"
+
+  # IPv4 only: blanket-drop all ICMP to a victim under an extreme multi-type flood.
+  # (No IPv6 counterpart — it would break Neighbor Discovery.)
+  - name: icmp-flood-host-ipv4
+    match: { family: ipv4, proto: icmp }
+    aggregate: { proto: exact, src: "/0", dst: "/32", icmp_type: all, icmp_code: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 100000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "host-wide icmp flood to {{dst}}, pps={{pps}}"

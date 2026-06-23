@@ -229,6 +229,13 @@ func (s *instanceStore) admit(key descriptor, sketch *heavyKeeper, now time.Time
 }
 
 // weakest returns the tracked instance with the lowest sketch estimate.
+//
+// Performance note: this is O(max_instances), and admit() calls it for every
+// non-resident packet once the pool is full. Under a high-cardinality flood (many
+// distinct sources — e.g. spoofed src) admission therefore degrades toward O(N)
+// per packet. That is fine at sFlow sample rates (hundreds–thousands/s); if it
+// ever becomes hot, sample the eviction (rescan ~1-in-K) or cache the weakest
+// victim between calls rather than rescanning here.
 func (s *instanceStore) weakest(sketch *heavyKeeper) (descriptor, float64, bool) {
 	var victimKey descriptor
 	var min float64

@@ -1,34 +1,85 @@
-# Predefined: direct UDP flood (often spoofed sources, small packets, high pps)
-# aimed at a victim. Identity is the VICTIM (dst); sources are random/spoofed and
-# must be collapsed. Triggers on packets/sec and drops all UDP to the victim.
-#
-# Note: this sheds legitimate UDP to the victim too — the standard volumetric
-# tradeoff. If the attack targets a known port, narrow it with match.dst_port and
-# aggregate dst_port to exact so only that port is dropped.
+# Predefined: UDP direct flood mitigations, victim-side (identity = dst host).
+# These are NOT reflection rules (reflection keys on the source service port —
+# see udp-reflection.yaml). Per-destination-port is the safe default; host-wide is
+# emergency-only. max_instances follows fineness: per-port -> 100, host-wide -> 30.
 rules:
+  # --- UDP flood, per destination port: fires on either high packet rate OR high
+  # bandwidth, so it catches both packet-stress and amplification-volume floods. ---
   - name: udp-flood-ipv4
     match: { family: ipv4, proto: udp }
-    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
     rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
-      medium: { resolution: 1m, duration: 1d }
+      max_instances: 100
+    trigger:
+      terms:
+        pps:  { metric: pps, window: 10s }
+        rate: { metric: bps, window: 10s }
+      expr: "pps > 100000 or rate > 1000000000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{rate}}"
+
+  - name: udp-flood-ipv6
+    match: { family: ipv6, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: exact }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 100
+    trigger:
+      terms:
+        pps:  { metric: pps, window: 10s }
+        rate: { metric: bps, window: 10s }
+      expr: "pps > 100000 or rate > 1000000000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{rate}}"
+
+  # --- Small-packet UDP flood (packet-processing stress). packet_len is detection
+  # only (FlowSpec cannot carry it), so mitigation is still per dst-port. ---
+  - name: udp-small-flood-ipv4
+    match: { family: ipv4, proto: udp, packet_len: { lt: 200 } }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
       max_instances: 100
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"   # 100 kpps of UDP to one victim
+      expr: "pps > 150000"
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "udp flood to {{dst}}, pps={{pps}}"
+    description: "small-packet udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
 
-  - name: udp-flood-ipv6
-    match: { family: ipv6, proto: udp }
-    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+  - name: udp-small-flood-ipv6
+    match: { family: ipv6, proto: udp, packet_len: { lt: 200 } }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: exact }
     rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
-      medium: { resolution: 1m, duration: 1d }
+      max_instances: 100
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 150000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "small-packet udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
+
+  # --- Common exposed-service destination floods (DNS, NTP, QUIC/443, IKE, OpenVPN,
+  # L2TP, STUN, WireGuard, game). Not reflection: keyed on dst_port. ---
+  - name: udp-service-flood-ipv4
+    match:
+      family: ipv4
+      proto: udp
+      dst_port: [53, 123, 443, 500, 4500, 1194, 1701, 3478, 51820, 27015]
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
       max_instances: 100
     trigger:
       terms:
@@ -36,4 +87,53 @@ rules:
       expr: "pps > 100000"
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "udp flood to {{dst}}, pps={{pps}}"
+    description: "udp service flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
+
+  - name: udp-service-flood-ipv6
+    match:
+      family: ipv6
+      proto: udp
+      dst_port: [53, 123, 443, 500, 4500, 1194, 1701, 3478, 51820, 27015]
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: exact }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 100
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 100000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "udp service flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
+
+  # --- UDP flood, host-wide emergency (drops all UDP to the victim) ---
+  - name: udp-flood-host-ipv4
+    match: { family: ipv4, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 500000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "host-wide udp flood to {{dst}}, pps={{pps}}"
+
+  - name: udp-flood-host-ipv6
+    match: { family: ipv6, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    rank: pps
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 30
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 500000"
+      sustained: 10s
+    flowspec: { action: drop, ttl: 180s, refresh: true }
+    description: "host-wide udp flood to {{dst}}, pps={{pps}}"

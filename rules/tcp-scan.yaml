@@ -1,0 +1,48 @@
+# Predefined: source-side TCP scan / new-connection surge on common management and
+# database ports. Identity is the SOURCE (src /32) plus the destination service
+# port; dst is wildcarded (/0) so one source hammering a port across many hosts is
+# caught and dropped network-wide. SYN-without-ACK only, so established connections
+# are never touched. This is the safe shape for a dst-any drop: one source, one
+# service port, SYN-only.
+#
+# Rank/trigger by a 30 s rate with a 30 s sustain to ride out short bursts (e.g. a
+# legitimate fan-out) and only act on sustained scanning. max_instances: 100
+# (source x service-port identity is wide).
+rules:
+  - name: tcp-scan-ipv4
+    match:
+      family: ipv4
+      proto: tcp
+      dst_port: [22, 23, 139, 445, 1433, 2323, 3306, 3389, 5432, 5900, 6379, 9200, 11211]
+      tcp_flags: "syn !ack"
+    aggregate: { proto: exact, src: "/32", dst: "/0", src_port: all, dst_port: exact }
+    rank: rate
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 100
+    trigger:
+      terms:
+        rate: { metric: pps, window: 30s }
+      expr: "rate > 1000"
+      sustained: 30s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "tcp scan/new-conn surge from {{src}} dport={{dst_port}}, attempts/s={{rate}}"
+
+  - name: tcp-scan-ipv6
+    match:
+      family: ipv6
+      proto: tcp
+      dst_port: [22, 23, 139, 445, 1433, 2323, 3306, 3389, 5432, 5900, 6379, 9200, 11211]
+      tcp_flags: "syn !ack"
+    aggregate: { proto: exact, src: "/128", dst: "/0", src_port: all, dst_port: exact }
+    rank: rate
+    history:
+      fine: { resolution: 1s, duration: 10m }
+      max_instances: 100
+    trigger:
+      terms:
+        rate: { metric: pps, window: 30s }
+      expr: "rate > 1000"
+      sustained: 30s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "tcp scan/new-conn surge from {{src}} dport={{dst_port}}, attempts/s={{rate}}"
