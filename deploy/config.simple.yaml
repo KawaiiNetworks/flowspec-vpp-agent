@@ -2,9 +2,11 @@ vpp:
   socket: /run/vpp/api.sock
   stats_socket: /run/vpp/stats.sock
 
+metrics:
+  listen: "0.0.0.0:9469"
+
 detector:
-  enabled: true
-  rules_dir: /etc/flowspec-vpp-agent/rules
+  dry_run: true
   rules_enabled:
     - dns-reflection
     - ntp-reflection
@@ -13,3 +15,7 @@ detector:
     - syn-flood-ipv4
     - icmp-flood-ipv4
     - ssh-scan-ipv4
+  sflow:
+    listen: "0.0.0.0:6343"
+  vpp_stats:
+    interval: 1s

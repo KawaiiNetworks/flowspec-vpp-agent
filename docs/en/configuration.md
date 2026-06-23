@@ -3,7 +3,7 @@
 > 🌐 **English** · [中文](../zh/configuration.md)
 
 The agent is started with a single YAML config file, default path
-`/etc/flowspec-vpp-agent/config.yaml` (override with `-config`). In the compose
+`/etc/flowspec-vpp-agent/config.yaml` (override with `--config` / `-c`). In the compose
 deployment the host's `./config` directory is mounted read-only at
 `/etc/flowspec-vpp-agent`, and the agent reads `config.yaml` inside it.
 
@@ -108,6 +108,16 @@ Where the Managed ACLs are applied, and in which direction.
 | `mode`      | string | `all`      | `all` = every data-plane interface (auto-excludes `local0` and the like); `list` = only those named in `list`. Any other value is invalid. |
 | `list`      | list   | empty      | **Required and non-empty when `mode: list`**; elements are VPP interface names (e.g. `GigabitEthernet0/0/0`). Ignored when `mode: all`. |
 | `direction` | string | `ingress`  | ACL direction, `ingress` or `egress`. In a bump-in-the-wire deployment, ingress on all interfaces already covers all inbound traffic. |
+
+**Coexistence with manual ACLs.** The agent does not clobber an interface's ACL
+list. On attach it preserves any pre-existing (manually-configured) ACLs and
+appends its own pair **last** within the managed direction. VPP matches a list in
+order, first match wins, so a manual `permit`/`deny` keeps precedence over ours —
+the agent's Managed ACLs act as the final policy. (Each Managed ACL ends in a
+`permit-any`, which is why ours must come last: placed earlier it would shadow any
+manual ACL behind it.) Only ACLs carrying the agent's own tag are touched; on a
+clean exit they are removed from those interfaces and the rest of the list is left
+intact.
 
 ---
 
@@ -266,9 +276,9 @@ matching flags (e.g. SYN), sparing established connections. Override emission wi
 Every matched packet carries concrete values for all fields. Those values form a
 comparable *descriptor*; **two packets with the same descriptor are the same
 instance**, and `max_instances` therefore counts distinct mitigations (overflow
-evicts the lowest-rate instance). `aggregate` sets the granularity of each field;
-an omitted field passes through at full granularity. Aggregation depends on the
-field's type:
+keeps the heaviest by the admission sketch — see history below). `aggregate` sets
+the granularity of each field; an omitted field passes through at full
+granularity. Aggregation depends on the field's type:
 
 | Field | Type | Forms | Default (pass-through) |
 | ----- | ---- | ----- | ---------------------- |
@@ -300,6 +310,37 @@ of `resolution` (slot count = duration ÷ resolution). Memory is bounded by
 `max_instances` × the ring sizes, so pick resolutions that cover your longest
 trigger window without over-allocating. Example: `fine {1s, 10m}` = 600 slots,
 `medium {1m, 1d}` = 1440 slots, `coarse {1h, 7d}` = 168 slots.
+
+##### How the `max_instances` slots are filled (admission)
+
+`max_instances` bounds how many targets get full ring sets — but **every** matched
+target is observed cheaply by a per-rule [HeavyKeeper](https://www.usenix.org/conference/atc18/presentation/gong)
+sketch (a few KB, fixed memory) that estimates each target's recent weighted
+volume. The full-instance pool holds the **heaviest** targets by that estimate:
+
+- A new target is admitted immediately while the pool has room.
+- When the pool is full, a newcomer is admitted only if its sketch estimate
+  exceeds the weakest current instance's — then that instance is evicted. Because
+  the sketch has watched both over recent traffic, this is an *accumulated*
+  comparison, so a genuinely heavier new attack always displaces a lighter one
+  and never starves (older builds compared a single sample and could freeze the
+  table once full).
+- The sketch ages on every tick, so a target that goes quiet fades and frees its
+  standing; a pulsing target that keeps bursting does not.
+
+**`rank` (rule field).** By default the sketch weights each target by packet rate
+over a ~30 s half-life. Set `rank: <term-name>` to rank by a trigger term's metric
+and window instead: a `bps` term ranks by **bytes** (so a reflection rule keeps
+its highest-*bps* victims, not highest-pps), and the sketch's decay half-life
+becomes that term's window, so the rank estimate is smoothed over the same span
+the term spans (not raw per-second pps). The named term must be a `pps`/`bps` term
+(a `vpp.*` term is interface-level and cannot rank). The built-in reflection rules
+use `rank: rate`.
+
+The `/status` endpoint reports each instance's current sketch estimate as
+`score` (packets/s, or bytes/s under a bps `rank`). Raising `max_instances` widens
+the pool; the cost is `max_instances` × ring memory plus a small fixed sketch
+(sized from `max_instances`).
 
 #### trigger — when to emit
 
@@ -373,18 +414,93 @@ variable is rejected at load time.
 
 ---
 
+## persist
+
+```yaml
+persist: /etc/flowspec-vpp-agent/persist.dump
+```
+
+| Field | Type | Default | Description |
+| ----- | ---- | ------- | ----------- |
+| `persist` | string | `<config dir>/persist.dump` | **Top-level** path of the state dump (detector rule history + VPP stats rings), written on shutdown and reloaded on startup so detection resumes from recent history after a quick restart. When omitted it defaults to `persist.dump` next to the config file; set an explicit path to relocate it. Only used when the detector runs. |
+
+On reload, history is restored **only** into entries that still match. An entry is skipped when:
+
+- the rule was **removed** or **renamed** (no current rule has that name), or
+- the rule's **definition changed** — the entire rule config (match, aggregate, history sizing **including `max_instances`**, trigger, flowspec, rank, description) is hashed into a fingerprint, and a changed fingerprint reloads nothing for that rule, or
+- a VPP-stats interface's **ring shape changed** (resolution/duration).
+
+This is intentional: history written under a different definition could mean something else, so a changed rule starts fresh. The admission sketch is never persisted (it rebuilds within a half-life).
+
+---
+
 ## log
+
+Logging fans out to one or more **sinks**, each filtered independently by **level**
+and **scope**. Omitting the whole `log` block keeps the default: stderr at `info`,
+all scopes, text format.
 
 ```yaml
 log:
-  level: info
-  format: text
+  stderr:                       # default sink, always active (omit => info/all/text)
+    level: info
+    scope: all
+    format: text
+  telegram:                     # optional; present => enabled
+    bot_token: "123456:ABC-DEF"
+    chat_id: "-1001234567890"
+    level: info
+    scope: [detector, acl]      # only detector events + ACL changes
+    format: text
 ```
 
-| Field    | Type   | Default | Description |
-| -------- | ------ | ------- | ----------- |
-| `level`  | string | `info`  | `debug` / `info` / `warn` / `error`. `debug` logs per-rule apply/dedup detail. |
-| `format` | string | `text`  | `text` or `json`. Prefer `json` for container/collector setups. |
+### Scopes
 
-Logs are written to **stderr**. Ignored rules are logged at `warn` level with
+Every log record carries one **scope** (the subsystem that emitted it). A sink's
+`scope` selects which it receives: `all`, `none` (disable the sink), a single
+scope, or a list.
+
+| Scope | Covers |
+| --- | --- |
+| `core` | startup/shutdown, config, HTTP endpoint, state load/save |
+| `bgp` | BGP speaker and per-peer sessions |
+| `acl` | FlowSpec rule **apply / update / withdraw** (the desired ACL set changing) |
+| `vpp` | VPP connect/reconnect, ACL attach/cleanup, low-level replace |
+| `detector` | detector events (announce/expire), sFlow, VPP-stats polling, leases |
+
+So `scope: [detector, acl]` delivers detector events and FlowSpec rule changes
+**without** VPP connect/attach chatter — handy for an alerting sink.
+
+### stderr
+
+| Field | Type | Default | Description |
+| -------- | ------ | ------- | ----------- |
+| `level` | string | `info` | `debug` / `info` / `warn` / `error`. `debug` adds per-rule dedup detail. |
+| `scope` | scope | `all` | `all` / `none` / a scope / a list. |
+| `format` | string | `text` | `text` or `json`. Prefer `json` for container/collector setups. |
+
+### telegram
+
+Present ⇒ enabled. Records are formatted (text/json), **batched**, and delivered to
+a chat via the Telegram Bot API. The sink is fully asynchronous: it never blocks
+logging, and if its bounded queue overflows it drops lines (reporting
+`[N log lines dropped]` on the next message) rather than stalling the agent.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `bot_token` | string | — | **Required.** BotFather token. |
+| `chat_id` | string | — | **Required.** Target chat/channel id. |
+| `level` | string | `info` | As stderr. |
+| `scope` | scope | `all` | As stderr. |
+| `format` | string | `text` | As stderr. |
+
+> **Security:** `bot_token` is a credential and Telegram is an external service —
+> messages (including any data in log fields) leave the box and may be retained by
+> Telegram. Keep the token out of shared/committed configs and scope the sink to
+> what you actually need to see remotely.
+
+Logs are written to **stderr** by default. Ignored rules are logged at `warn` with
 `reason`, `detail`, `family`, `peer` and `original_flowspec` fields for triage.
+
+> The CLI overrides the config path: `--config` / `-c`.
+

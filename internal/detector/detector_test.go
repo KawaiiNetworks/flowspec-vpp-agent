@@ -312,6 +312,142 @@ rules:
 	}
 }
 
+// Cold-start fix: once the pool is full of light targets, a genuinely heavier new
+// target (per the HeavyKeeper sketch) must still be admitted, displacing a light
+// one — the old single-sample admission froze the table instead.
+func TestEngine_HeavyNewcomerDisplacesLight(t *testing.T) {
+	cfg := `
+rules:
+  - name: tiny
+    match: { family: ipv4, proto: udp }
+    aggregate: { src: "/32" }
+    history:
+      fine: { resolution: 1s, duration: 10s }
+      max_instances: 2
+    trigger:
+      terms:
+        short: { metric: pps, window: 1s }
+      expr: "short > 0"
+    flowspec: { action: drop, ttl: 10s, src_prefix: "{{src}}" }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(5000, 0)
+	obs := func(src string, n int) {
+		for i := 0; i < n; i++ {
+			engine.Observe(Sample{
+				At: now, Family: flowspec.FamilyIPv4,
+				Src: netip.MustParseAddr(src), Dst: netip.MustParseAddr("203.0.113.1"),
+				Proto: protoUDP, PacketLen: 100, SampleRate: 1,
+			})
+		}
+	}
+	tracks := func(src string) bool {
+		want := netip.MustParseAddr(src)
+		for k := range rules[0].store.items {
+			if k.src == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	obs("198.51.100.1", 1)  // light A
+	obs("198.51.100.2", 1)  // light B -> pool full (2)
+	obs("198.51.100.3", 50) // heavy newcomer
+
+	if got := rules[0].InstanceCount(); got != 2 {
+		t.Fatalf("instance count = %d, want 2", got)
+	}
+	if !tracks("198.51.100.3") {
+		t.Fatal("heavy newcomer was not admitted (cold-start starvation)")
+	}
+}
+
+// rank: <bps term> ranks the pool by bytes, so a low-pps/high-bps victim
+// (reflection-shaped) outranks a high-pps/low-bps one for the single slot.
+func TestEngine_RankByBytes(t *testing.T) {
+	cfg := `
+rules:
+  - name: refl
+    match: { family: ipv4, proto: udp }
+    aggregate: { src: "/32" }
+    rank: rate
+    history:
+      fine: { resolution: 1s, duration: 10s }
+      max_instances: 1
+    trigger:
+      terms:
+        rate: { metric: bps, window: 5s }
+      expr: "rate > 1000000000"
+    flowspec: { action: drop, ttl: 10s, src_prefix: "{{src}}" }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rules[0].rankBytes {
+		t.Fatal("rank: rate should rank by bytes (bps term)")
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(6000, 0)
+	obs := func(src string, n int, plen uint16) {
+		for i := 0; i < n; i++ {
+			engine.Observe(Sample{
+				At: now, Family: flowspec.FamilyIPv4,
+				Src: netip.MustParseAddr(src), Dst: netip.MustParseAddr("203.0.113.1"),
+				Proto: protoUDP, PacketLen: plen, SampleRate: 1,
+			})
+		}
+	}
+	tracks := func(src string) bool {
+		want := netip.MustParseAddr(src)
+		for k := range rules[0].store.items {
+			if k.src == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	obs("198.51.100.10", 100, 64)  // many small packets: high pps, 6400 bytes
+	obs("198.51.100.11", 10, 1400) // few large packets: low pps, 14000 bytes
+
+	if !tracks("198.51.100.11") {
+		t.Fatal("high-bytes victim should hold the slot under rank: rate")
+	}
+	if tracks("198.51.100.10") {
+		t.Fatal("high-pps/low-bytes victim should have been displaced")
+	}
+}
+
+func TestCompile_RankErrors(t *testing.T) {
+	base := func(rank string) string {
+		return `
+rules:
+  - name: r
+    match: { family: ipv4, proto: udp }
+    aggregate: { src: "/32" }
+    rank: ` + rank + `
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 2 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 5s }
+      expr: "pps > 1"
+    flowspec: { action: drop, ttl: 10s, src_prefix: "{{src}}" }
+`
+	}
+	if _, err := CompileConfig([]byte(base("nope"))); err == nil {
+		t.Fatal("expected error for rank referencing an undefined term")
+	}
+	if _, err := CompileConfig([]byte(base("pps"))); err != nil {
+		t.Fatalf("rank: pps should compile: %v", err)
+	}
+}
+
 func TestEngine_VPPStatsMetric(t *testing.T) {
 	cfg := `
 rules:

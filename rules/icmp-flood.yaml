@@ -5,29 +5,31 @@ rules:
   - name: icmp-flood-ipv4
     match: { family: ipv4, proto: icmp }
     aggregate: { proto: exact, src: "/0", dst: "/32" }   # ICMP has no ports; they don't apply
+    rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
+      expr: "pps > 20000"     # 20 k ICMP/s to one victim
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "icmp flood to {{dst}}, pps={{pps}}"
 
-  - name: icmpv6-flood
+  - name: icmp-flood-ipv6
     match: { family: ipv6, proto: icmpv6 }
     aggregate: { proto: exact, src: "/0", dst: "/128" }  # ICMP has no ports; they don't apply
+    rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
+      expr: "pps > 20000"     # 20 k ICMP/s to one victim
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "icmpv6 flood to {{dst}}, pps={{pps}}"

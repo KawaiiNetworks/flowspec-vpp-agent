@@ -117,6 +117,39 @@ type descriptor struct {
 	dstPortHi uint16
 }
 
+// hash returns a 64-bit FNV-1a hash of the descriptor, used to key the
+// HeavyKeeper admission sketch. Two distinct descriptors collide only with
+// ~2^-64 probability, so the sketch fingerprint is effectively exact.
+func (d descriptor) hash() uint64 {
+	const (
+		offset = uint64(1469598103934665603)
+		prime  = uint64(1099511628211)
+	)
+	h := offset
+	mix := func(b byte) { h ^= uint64(b); h *= prime }
+	mix(byte(d.family))
+	mix(d.proto)
+	if d.protoWild {
+		mix(1)
+	} else {
+		mix(0)
+	}
+	for _, a := range []netip.Addr{d.src, d.dst} {
+		var b [16]byte
+		if a.IsValid() {
+			b = a.As16()
+		}
+		for _, x := range b {
+			mix(x)
+		}
+	}
+	for _, p := range []uint16{d.srcPortLo, d.srcPortHi, d.dstPortLo, d.dstPortHi} {
+		mix(byte(p))
+		mix(byte(p >> 8))
+	}
+	return h
+}
+
 // metricKind selects which signal a trigger term aggregates.
 type metricKind uint8
 

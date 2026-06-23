@@ -3,7 +3,7 @@
 > 🌐 [English](../en/configuration.md) · **中文**
 
 agent 通过一个 YAML 配置文件启动，默认路径为
-`/etc/flowspec-vpp-agent/config.yaml`（可用 `-config` 覆盖）。compose 部署时把宿主机的
+`/etc/flowspec-vpp-agent/config.yaml`（可用 `--config` / `-c` 覆盖）。compose 部署时把宿主机的
 `./config` 目录只读挂载到 `/etc/flowspec-vpp-agent`，agent 读取其中的 `config.yaml`。
 
 下面按段落逐项说明。完整示例见
@@ -99,6 +99,13 @@ Managed ACL 挂到哪些接口、什么方向。
 | `mode`      | string | `all`      | `all` = 全部数据面接口（自动排除 `local0` 一类）；`list` = 仅 `list` 中列出的接口。其他值非法。 |
 | `list`      | list   | 空         | 当 `mode: list` 时**必填且非空**，元素为 VPP 接口名（如 `GigabitEthernet0/0/0`）。`mode: all` 时忽略。 |
 | `direction` | string | `ingress`  | ACL 应用方向，`ingress` 或 `egress`。串接（bump-in-the-wire）部署下默认 `ingress` 即覆盖全部入向流量。 |
+
+**与手动 ACL 共存。** agent 不会清空接口的 ACL 列表。挂载时它保留接口上已有的（手动配置的）
+ACL，把自己那对 Managed ACL 追加到所管理方向的**最后**。VPP 按列表顺序匹配、首条命中即停，
+因此手动的 `permit`/`deny` 优先级高于我们的——我们的 Managed ACL 充当兜底策略。（每个 Managed
+ACL 以 `permit-any` 结尾，这正是我们必须放最后的原因：若放在前面，会把它后面的手动 ACL 全部
+遮蔽。）只有携带 agent 自身标记的 ACL 会被改动；干净退出时把它们从这些接口上摘掉，列表其余部分
+原样保留。
 
 ---
 
@@ -235,7 +242,7 @@ rules:
 #### aggregate —— 实例身份
 
 每个命中包都带着所有字段的具体值。这些值组成一个可比较的*描述符*；**描述符相同即同一实例**，
-因此 `max_instances` 计的是不同的缓解动作（溢出时淘汰速率最低的实例）。`aggregate` 设定每个
+因此 `max_instances` 计的是不同的缓解动作（溢出时按准入草图保留最猛的——见下方 history）。`aggregate` 设定每个
 字段的granularity；省略的字段按完整granularity透传。聚合方式按字段类型不同：
 
 | 字段 | 类型 | 形式 | 默认（透传） |
@@ -262,6 +269,27 @@ rules:
 的整数倍（槽数 = duration ÷ resolution）。内存上界 = `max_instances` × 各环大小,因此分辨率
 要能覆盖最长的触发窗口又不过度分配。例如 `fine {1s, 10m}` = 600 槽,`medium {1m, 1d}` = 1440 槽,
 `coarse {1h, 7d}` = 168 槽。
+
+##### `max_instances` 这些槽位怎么填(准入)
+
+`max_instances` 限制的是「有几个目标拥有完整环」——但**每个**命中的目标都会被一个 per-rule 的
+[HeavyKeeper](https://www.usenix.org/conference/atc18/presentation/gong) 草图(几 KB、固定内存)
+廉价观察,估计其近期加权流量。完整实例池只装**估计值最高**的那些目标:
+
+- 池未满时,新目标立即收录。
+- 池满后,新目标只有当其草图估计值**超过当前最弱实例**时才被收录,并淘汰那个最弱的。因为草图
+  已经观察过两者近期的流量,这是**累积**比较——所以真正更猛的新攻击总能挤掉较轻的,**不会饿死**
+  (旧版本用单个样本比较,池满后会冻结整张表)。
+- 草图每个 tick 衰减,所以安静下来的目标会淡出、让出位置;持续脉冲的目标不会。
+
+**`rank`(规则字段)。** 默认草图按包速率加权(约 30s 半衰期)。设 `rank: <term名>` 改为按某个
+触发项的指标与窗口排名:`bps` 项按**字节**排名(于是 reflection 规则保留的是 **bps** 最高的受害者,
+而非 pps 最高的),且草图的衰减半衰期变为该项的 window —— 这样排名估计值在与该项相同的时间跨度上
+被平滑(而非生硬的每秒 pps)。被引用的项必须是 `pps`/`bps` 项(`vpp.*` 是接口级,不能用于排名)。
+内置 reflection 规则用了 `rank: rate`。
+
+`/status` 端点把每个实例当前的草图估计值作为 `score` 报出(包/秒,或在 bps `rank` 下为字节/秒)。
+调大 `max_instances` 扩大池子;代价是 `max_instances` × 环内存 + 一个小的固定草图(按 `max_instances` 定大小)。
 
 #### trigger —— 何时下发
 
@@ -318,17 +346,89 @@ rules:
 
 ---
 
+## persist
+
+```yaml
+persist: /etc/flowspec-vpp-agent/persist.dump
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+| ---- | ---- | ------ | ---- |
+| `persist` | string | `<config 同目录>/persist.dump` | **顶层**字段：状态转储（检测器规则 history + VPP stats 环）的路径，退出时写入、启动时载入，使快速重启后从近期历史恢复检测。省略时默认取配置文件同目录下的 `persist.dump`；填明确路径可改位置。仅在检测器运行时使用。 |
+
+载入时，只有仍然匹配的条目才会恢复 history。出现以下情况会**跳过**该条目：
+
+- 规则被**删除**或**改名**（不存在同名规则）；或
+- 规则**定义改变**——整条规则配置（match、aggregate、history 尺寸**含 `max_instances`**、trigger、flowspec、rank、description）被哈希成一个指纹，指纹一变，该规则就不载入任何旧 history；或
+- 某个 VPP-stats 接口的**环形状变了**（resolution/duration）。
+
+这是有意为之：定义变了之后，旧 history 的含义可能已经不同，所以改过的规则从零开始。准入草图从不持久化（一个半衰期内自行重建）。
+
+---
+
 ## log
+
+日志会分发到一个或多个**输出模块（sink）**，每个模块按**等级（level）**与**范围
+（scope）**独立过滤。整段 `log` 省略时保持默认：stderr、`info`、范围 `all`、`text`。
 
 ```yaml
 log:
-  level: info
-  format: text
+  stderr:                       # 默认模块，始终启用（省略 => info/all/text）
+    level: info
+    scope: all
+    format: text
+  telegram:                     # 可选；写了即启用
+    bot_token: "123456:ABC-DEF"
+    chat_id: "-1001234567890"
+    level: info
+    scope: [detector, acl]      # 只要检测器事件 + ACL 变化
+    format: text
 ```
 
-| 字段     | 类型   | 默认值  | 说明 |
-| -------- | ------ | ------- | ---- |
-| `level`  | string | `info`  | `debug` / `info` / `warn` / `error`。`debug` 会打印每条规则的下发/去重细节。 |
-| `format` | string | `text`  | `text` 或 `json`。容器/采集场景建议 `json`。 |
+### 范围（scope）
 
-日志写到 **stderr（标准错误）**。被忽略的规则会在 `warn` 级别记录，包含 `reason`、`detail`、`family`、`peer`、`original_flowspec` 等字段，便于排查。
+每条日志带一个**范围**（由发出它的子系统决定）。模块的 `scope` 选择接收哪些：`all`、
+`none`（关闭该模块）、单个范围，或一个列表。
+
+| 范围 | 覆盖 |
+| --- | --- |
+| `core` | 启动/退出、配置、HTTP 端点、状态载入/保存 |
+| `bgp` | BGP speaker 与各 peer 会话 |
+| `acl` | FlowSpec 规则 **下发 / 更新 / 撤销**（即期望 ACL 集合发生变化） |
+| `vpp` | VPP 连接/重连、ACL 挂载/清理、底层 replace |
+| `detector` | 检测器事件（announce/expire）、sFlow、VPP-stats 轮询、租约 |
+
+所以 `scope: [detector, acl]` 只投递检测器事件与 FlowSpec 规则变化，**不含** VPP
+连接/挂载的噪声 —— 适合做告警模块。
+
+### stderr
+
+| 字段 | 类型 | 默认值 | 说明 |
+| -------- | ------ | ------- | ---- |
+| `level` | string | `info` | `debug` / `info` / `warn` / `error`。`debug` 会打印每条规则的去重细节。 |
+| `scope` | scope | `all` | `all` / `none` / 单个范围 / 列表。 |
+| `format` | string | `text` | `text` 或 `json`。容器/采集场景建议 `json`。 |
+
+### telegram
+
+写了即启用。日志被格式化（text/json）、**批量**通过 Telegram Bot API 投递到聊天。该模块
+完全异步：从不阻塞日志路径；其有界队列溢出时丢弃日志（下一条消息里报告
+`[N log lines dropped]`），而不是拖慢 agent。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `bot_token` | string | — | **必填。** BotFather 给的 token。 |
+| `chat_id` | string | — | **必填。** 目标聊天/频道 id。 |
+| `level` | string | `info` | 同 stderr。 |
+| `scope` | scope | `all` | 同 stderr。 |
+| `format` | string | `text` | 同 stderr。 |
+
+> **安全：** `bot_token` 是凭据，Telegram 是外部服务 —— 消息（含日志字段里的任何数据）会
+> 离开本机，并可能被 Telegram 留存。请勿把 token 写进共享/提交的配置，并把该模块的范围收窄到
+> 你确实需要远程看到的内容。
+
+默认日志写到 **stderr（标准错误）**。被忽略的规则会在 `warn` 级别记录，包含 `reason`、
+`detail`、`family`、`peer`、`original_flowspec` 等字段，便于排查。
+
+> 命令行覆盖配置路径：`--config` / `-c`。
+

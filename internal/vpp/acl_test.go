@@ -54,3 +54,67 @@ func TestBuildACLRules_EmptyFamilyPermitsAll(t *testing.T) {
 		}
 	}
 }
+
+// mergeManagedLast must preserve manually-configured ACLs, drop any stale managed
+// ones, and place our pair last within the managed direction so manual ACLs keep
+// precedence (VPP matches in list order, first match wins).
+func TestMergeManagedLast(t *testing.T) {
+	managed := map[uint32]bool{1: true, 2: true, 7: true} // ours=1,2; 7=orphan tag
+	ours := []uint32{1, 2}
+
+	cases := []struct {
+		name       string
+		cur        []uint32
+		nInput     uint8
+		dir        Direction
+		wantAcls   []uint32
+		wantNInput uint8
+	}{
+		{
+			name: "empty interface, ingress",
+			cur:  nil, nInput: 0, dir: Ingress,
+			wantAcls: []uint32{1, 2}, wantNInput: 2,
+		},
+		{
+			name: "manual input keeps precedence, ours appended last",
+			cur:  []uint32{9}, nInput: 1, dir: Ingress,
+			wantAcls: []uint32{9, 1, 2}, wantNInput: 3,
+		},
+		{
+			name: "manual input and output preserved, ours into input section",
+			cur:  []uint32{9, 8}, nInput: 1, dir: Ingress,
+			wantAcls: []uint32{9, 1, 2, 8}, wantNInput: 3,
+		},
+		{
+			name: "egress appends ours to the output section",
+			cur:  []uint32{9, 8}, nInput: 1, dir: Egress,
+			wantAcls: []uint32{9, 8, 1, 2}, wantNInput: 1,
+		},
+		{
+			name: "re-attach is idempotent and re-orders ours to last",
+			cur:  []uint32{1, 9, 2}, nInput: 3, dir: Ingress,
+			wantAcls: []uint32{9, 1, 2}, wantNInput: 3,
+		},
+		{
+			name: "stale orphan-tagged acl is stripped",
+			cur:  []uint32{7, 9}, nInput: 2, dir: Ingress,
+			wantAcls: []uint32{9, 1, 2}, wantNInput: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotAcls, gotNInput := mergeManagedLast(tc.cur, tc.nInput, managed, ours, tc.dir)
+			if gotNInput != tc.wantNInput {
+				t.Errorf("nInput = %d, want %d", gotNInput, tc.wantNInput)
+			}
+			if len(gotAcls) != len(tc.wantAcls) {
+				t.Fatalf("acls = %v, want %v", gotAcls, tc.wantAcls)
+			}
+			for i := range gotAcls {
+				if gotAcls[i] != tc.wantAcls[i] {
+					t.Fatalf("acls = %v, want %v", gotAcls, tc.wantAcls)
+				}
+			}
+		})
+	}
+}

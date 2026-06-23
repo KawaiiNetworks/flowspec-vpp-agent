@@ -33,6 +33,7 @@ type InstanceSnapshot struct {
 	LastSeen  time.Time          `json:"last_seen"`
 	PPS       float64            `json:"pps"`
 	BPS       float64            `json:"bps"`
+	Score     float64            `json:"score"` // HeavyKeeper admission estimate (recent weight)
 	Firing    bool               `json:"firing"`
 	Terms     map[string]float64 `json:"terms,omitempty"`
 }
@@ -85,6 +86,7 @@ func (r *Rule) instanceSnapshot(inst *instance, now time.Time, ctx EvalContext) 
 		LastSeen:  inst.lastSeen,
 		PPS:       inst.fine.rate(now, 1, metricPPS),
 		BPS:       inst.fine.rate(now, 1, metricBPS),
+		Score:     r.sketch.estimate(inst.keyHash),
 		Firing:    !inst.trueSince.IsZero(),
 		Terms:     terms,
 	}

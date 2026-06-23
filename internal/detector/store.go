@@ -21,6 +21,7 @@ func slotIndex(epoch int64, n int) int {
 
 type instance struct {
 	key           descriptor
+	keyHash       uint64 // cached descriptor.hash() for sketch lookups
 	fine          *sampleRing
 	medium        *sampleRing
 	coarse        *sampleRing
@@ -28,12 +29,12 @@ type instance struct {
 	lastEvent     time.Time
 	trueSince     time.Time // when the trigger expression first became true
 	lastIngressIf string
-	score         float64
 }
 
 func newInstance(key descriptor, history historySpec, now time.Time) *instance {
 	return &instance{
 		key:      key,
+		keyHash:  key.hash(),
 		fine:     newSampleRing(history.fineSlots, history.fineResolution),
 		medium:   newOptionalSampleRing(history.mediumSlots, history.mediumResolution),
 		coarse:   newOptionalSampleRing(history.coarseSlots, history.coarseResolution),
@@ -50,7 +51,6 @@ func (i *instance) add(at time.Time, packetLen uint16, weight uint64) {
 		i.coarse.add(at, packetLen, weight)
 	}
 	i.lastSeen = at
-	i.score = i.fine.rate(at, 1, metricPPS)
 }
 
 // ringFor returns the instance ring a term reads from.
@@ -202,7 +202,14 @@ func newInstanceStore(history historySpec) *instanceStore {
 
 func (s *instanceStore) len() int { return len(s.items) }
 
-func (s *instanceStore) upsert(key descriptor, now time.Time, firstScore float64) (*instance, bool) {
+// admit returns the instance for key, creating one if there is room. When the
+// pool is full it admits the candidate only if its HeavyKeeper estimate exceeds
+// the weakest current instance's estimate, evicting that instance. Because the
+// sketch has observed both targets over recent traffic, this is a fair
+// accumulated comparison — not a single-sample one — so a genuinely heavier new
+// target always displaces a lighter incumbent (and a transient one never gets a
+// foothold it can't keep).
+func (s *instanceStore) admit(key descriptor, sketch *heavyKeeper, now time.Time) (*instance, bool) {
 	if inst := s.items[key]; inst != nil {
 		return inst, true
 	}
@@ -211,8 +218,8 @@ func (s *instanceStore) upsert(key descriptor, now time.Time, firstScore float64
 		s.items[key] = inst
 		return inst, true
 	}
-	victimKey, victim := s.lowestScore()
-	if victim == nil || victim.score >= firstScore {
+	victimKey, victimEst, ok := s.weakest(sketch)
+	if !ok || sketch.estimate(key.hash()) <= victimEst {
 		return nil, false
 	}
 	delete(s.items, victimKey)
@@ -221,13 +228,16 @@ func (s *instanceStore) upsert(key descriptor, now time.Time, firstScore float64
 	return inst, true
 }
 
-func (s *instanceStore) lowestScore() (descriptor, *instance) {
+// weakest returns the tracked instance with the lowest sketch estimate.
+func (s *instanceStore) weakest(sketch *heavyKeeper) (descriptor, float64, bool) {
 	var victimKey descriptor
-	var victim *instance
-	for key, inst := range s.items {
-		if victim == nil || inst.score < victim.score {
-			victimKey, victim = key, inst
+	var min float64
+	found := false
+	for k, inst := range s.items {
+		est := sketch.estimate(inst.keyHash)
+		if !found || est < min {
+			victimKey, min, found = k, est, true
 		}
 	}
-	return victimKey, victim
+	return victimKey, min, found
 }

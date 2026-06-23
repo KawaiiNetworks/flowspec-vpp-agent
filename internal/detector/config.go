@@ -29,6 +29,11 @@ type RuleConfig struct {
 	Trigger     TriggerConfig   `yaml:"trigger"`
 	FlowSpec    FlowSpecConfig  `yaml:"flowspec"`
 	Description string          `yaml:"description"`
+	// Rank names a trigger term whose metric (pps→packets, bps→bytes) and window
+	// drive the admission ranking. Empty ranks by packet rate over the default
+	// half-life. Use it so a bps rule (e.g. reflection) keeps the heaviest victims
+	// by bytes, not packets.
+	Rank string `yaml:"rank"`
 }
 
 // MatchConfig is the packet filter. All fields are optional; an absent field

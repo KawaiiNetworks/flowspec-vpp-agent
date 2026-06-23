@@ -133,7 +133,9 @@ func (c *Client) bootstrap(ctx context.Context) error {
 }
 
 // bootstrapLocked creates the empty Managed ACLs and attaches them. c.opMu must
-// be held by the caller.
+// be held by the caller. After (re)creating ours, it deletes any other ACLs that
+// still carry our tag — orphans from a prior run or a re-bootstrap — so tagged
+// ACLs never accumulate across restarts.
 func (c *Client) bootstrapLocked(ctx context.Context) error {
 	if err := c.replaceACLLocked(ctx, IPv4, nil); err != nil {
 		return fmt.Errorf("create ipv4 managed acl: %w", err)
@@ -144,6 +146,10 @@ func (c *Client) bootstrapLocked(ctx context.Context) error {
 	if err := c.attachLocked(ctx); err != nil {
 		return fmt.Errorf("attach managed acls: %w", err)
 	}
+	c.mu.Lock()
+	v4, v6 := c.idx[IPv4], c.idx[IPv6]
+	c.mu.Unlock()
+	c.cleanupTaggedExcept(ctx, v4, v6)
 	return nil
 }
 
@@ -185,9 +191,16 @@ func (c *Client) handleEvents(ctx context.Context, evCh chan govppcore.Connectio
 	}
 }
 
-// Close releases the VPP connection.
+// Close detaches and deletes the Managed ACLs (best-effort, with a short timeout)
+// and releases the VPP connection.
 func (c *Client) Close() {
-	if c.conn != nil {
-		c.conn.Disconnect()
+	if c.conn == nil {
+		return
 	}
+	if c.aclc != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		c.cleanupOnClose(ctx)
+		cancel()
+	}
+	c.conn.Disconnect()
 }

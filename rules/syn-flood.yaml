@@ -7,14 +7,15 @@ rules:
   - name: syn-flood-ipv4
     match: { family: ipv4, proto: tcp, tcp_flags: "syn !ack" }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"   # 100 k SYN/s to one victim
+      expr: "pps > 20000"   # 20 k SYN/s to one victim
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "syn flood to {{dst}}, pps={{pps}}"
@@ -22,14 +23,15 @@ rules:
   - name: syn-flood-ipv6
     match: { family: ipv6, proto: tcp, tcp_flags: "syn !ack" }
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
+      expr: "pps > 20000"
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "syn flood to {{dst}}, pps={{pps}}"

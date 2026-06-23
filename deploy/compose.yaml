@@ -11,7 +11,10 @@ services:
     volumes:
       - /run/vpp:/run/vpp:z          # podman + SELinux needs :z; plain docker can drop it
       # Mount the whole config directory; the agent reads config.yaml inside it.
-      - ./config:/etc/flowspec-vpp-agent:ro
+      # Writable (no :ro) so the agent can persist its state dump next to the
+      # config (persist.dump by default; see the top-level `persist:` setting).
+      # podman + SELinux: add :z if you hit denials on the now-writable mount.
+      - ./config:/etc/flowspec-vpp-agent
 
     # The embedded GoBGP speaker must be reachable by FlowSpec peers; host
     # networking puts the BGP listen port (default 10179) directly on the host

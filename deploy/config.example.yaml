@@ -53,9 +53,22 @@ detector:                            # [opt] sFlow/VPP-stats detector; PRESENCE 
   sample_queue: 65536                # [opt] default 65536; 0 -> default; overflow drops samples
   event_queue: 1024                  # [opt] default 1024; 0 -> default
 
-log:                                 # [opt] logging
-  level: info                        # [opt] default "info"; debug|info|warn|error
-  format: text                       # [opt] default "text"; text|json
+persist: ""                          # [opt] default ""=<config dir>/persist.dump; detector state (rule history + vpp stats),
+                                     #       saved on exit & reloaded on start. A removed/changed rule (any field, incl.
+                                     #       max_instances) or changed vpp_stats rings reloads nothing for that entry.
+
+log:                                 # [opt] logging sinks; omit entirely => stderr only (info/all/text)
+  stderr:                            # [opt] default sink, always active; omit => info/all/text
+    level: info                      # [opt] default info; debug|info|warn|error
+    scope: all                       # [opt] default all; or "none" | <scope> | [<scope>, ...]
+    format: text                     # [opt] default text; text|json
+  # telegram:                        # [opt] present => enabled; batches logs to a Telegram chat
+  #   bot_token: "123456:ABC-DEF"    # [req] BotFather token — SECRET; keep out of shared configs
+  #   chat_id: "-1001234567890"      # [req] target chat/channel id
+  #   level: info                    # [opt] default info
+  #   scope: [detector, acl]         # [opt] default all; here: only detector events + ACL changes
+  #   format: text                   # [opt] default text; text|json
+  # scopes: core | bgp | acl | vpp | detector  (acl = FlowSpec rule apply/withdraw/update)
 
 # Rule files (built-in or under detector.rules_dir) hold one or more rules. See
 # docs/en/configuration.md for the full rule reference.
@@ -64,6 +77,7 @@ log:                                 # [opt] logging
 #   - name: udp-small-flood
 #     match: { family: ipv4, proto: udp, packet_len: { lt: 100 } }
 #     aggregate: { proto: exact, src: "/32", dst: "/0", src_port: all, dst_port: all }
+#     rank: short               # optional; rank the instance pool by this term (bps term -> by bytes)
 #     history:
 #       fine:   { resolution: 1s, duration: 10m }
 #       medium: { resolution: 1m, duration: 1d }

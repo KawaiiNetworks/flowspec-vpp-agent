@@ -1,6 +1,7 @@
 package detector
 
 import (
+	"math"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 // Rule is one compiled detection rule with fixed-capacity instance state.
 type Rule struct {
 	name        string
+	fingerprint string // hash of the source RuleConfig; gates history reload (persist.go)
 	description *template
 
 	// match filters (a zero/empty filter imposes no constraint)
@@ -49,6 +51,16 @@ type Rule struct {
 
 	history historySpec
 	store   *instanceStore
+
+	// admission: a HeavyKeeper sketch observes every matched descriptor and ranks
+	// candidates so the bounded instance pool tracks the heaviest targets. rankBytes
+	// weights the sketch by bytes (bps rank) rather than packets. The sketch ages by
+	// halfLife on each Tick (lastDecay tracks wall-clock between ticks, so the decay
+	// is interval-agnostic).
+	sketch    *heavyKeeper
+	rankBytes bool
+	halfLife  time.Duration
+	lastDecay time.Time
 }
 
 // Name returns the compiled rule name.
@@ -102,8 +114,15 @@ func (r *Rule) Observe(s Sample) {
 	if weight == 0 {
 		weight = 1
 	}
-	firstScore := float64(weight) / r.history.fineResolution.Seconds()
-	inst, ok := r.store.upsert(d, s.At, firstScore)
+	// Every matched target is observed by the sketch (cheap, fixed memory); only
+	// the heaviest are promoted to a full instance with rings. The sketch is
+	// weighted by the rank metric (bytes for a bps rank, else packets).
+	hkWeight := float64(weight)
+	if r.rankBytes {
+		hkWeight *= float64(s.PacketLen)
+	}
+	r.sketch.add(d.hash(), hkWeight)
+	inst, ok := r.store.admit(d, r.sketch, s.At)
 	if !ok {
 		return
 	}
@@ -114,6 +133,7 @@ func (r *Rule) Observe(s Sample) {
 // Tick evaluates every instance of this rule at time now and returns the events
 // that fired.
 func (r *Rule) Tick(now time.Time, ctx EvalContext) []Event {
+	r.ageSketch(now)
 	var out []Event
 	for _, inst := range r.store.items {
 		if ev, ok := r.evalInstance(inst, now, ctx); ok {
@@ -121,6 +141,17 @@ func (r *Rule) Tick(now time.Time, ctx EvalContext) []Event {
 		}
 	}
 	return out
+}
+
+// ageSketch decays the admission sketch by the wall-clock elapsed since the last
+// tick, so estimates track recent volume regardless of tick cadence.
+func (r *Rule) ageSketch(now time.Time) {
+	if !r.lastDecay.IsZero() && r.halfLife > 0 {
+		if dt := now.Sub(r.lastDecay); dt > 0 {
+			r.sketch.decayAll(math.Pow(0.5, dt.Seconds()/r.halfLife.Seconds()))
+		}
+	}
+	r.lastDecay = now
 }
 
 func (r *Rule) matches(s Sample) bool {

@@ -4,12 +4,17 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/logging"
 )
 
 // Config is the top-level agent configuration.
@@ -19,7 +24,11 @@ type Config struct {
 	ACL      ACL       `yaml:"acl"`
 	Metrics  Metrics   `yaml:"metrics"`
 	Detector *Detector `yaml:"detector"` // present => detector enabled
-	Log      Log       `yaml:"log"`
+	// Persist is the path of the state dump (detector rule history + VPP stats),
+	// written on shutdown and reloaded on startup. Empty => default to persist.dump
+	// next to the config file (see Load). Only used when the detector runs.
+	Persist string `yaml:"persist"`
+	Log     Log    `yaml:"log"`
 }
 
 // VPP holds VPP connection settings. Both sockets live under /run/vpp (§19).
@@ -123,10 +132,106 @@ func (c Config) DetectorEnabled() bool { return c.Detector != nil }
 // `vpp_stats:` block is present under the detector.
 func (d *Detector) VPPStatsEnabled() bool { return d != nil && d.VPPStats != nil }
 
-// Log controls logging.
+// Log configures the logging sinks. stderr is always active (defaulting to
+// level info, scope all, format text); telegram is enabled only when present.
 type Log struct {
-	Level  string `yaml:"level"`  // debug|info|warn|error
-	Format string `yaml:"format"` // text|json
+	Stderr   *StderrLog   `yaml:"stderr"`   // nil => default stderr sink
+	Telegram *TelegramLog `yaml:"telegram"` // nil => disabled
+}
+
+// StderrLog tunes the default stderr sink. Omitted fields use info/all/text.
+type StderrLog struct {
+	Level  string   `yaml:"level"`  // debug|info|warn|error (default info)
+	Scope  ScopeSet `yaml:"scope"`  // all|none|name|[names] (default all)
+	Format string   `yaml:"format"` // text|json (default text)
+}
+
+// TelegramLog configures a Telegram Bot sink: formatted log records are batched
+// and delivered to a chat. bot_token and chat_id are required when present.
+type TelegramLog struct {
+	BotToken string   `yaml:"bot_token"`
+	ChatID   string   `yaml:"chat_id"`
+	Level    string   `yaml:"level"`  // default info
+	Scope    ScopeSet `yaml:"scope"`  // default all
+	Format   string   `yaml:"format"` // default text
+}
+
+// ScopeSet selects which log scopes a sink receives. In YAML it accepts a scalar
+// `all` (every scope), `none` (disable the sink), a single scope name, or a list
+// of names. An omitted scope (Set==false) defaults to all.
+type ScopeSet struct {
+	Set    bool     // whether the field was present
+	All    bool     // "all"
+	Scopes []string // explicit scope names ("none"/empty + !All => disabled)
+}
+
+func (s *ScopeSet) UnmarshalYAML(value *yaml.Node) error {
+	s.Set = true
+	var one string
+	if err := value.Decode(&one); err == nil {
+		switch strings.ToLower(strings.TrimSpace(one)) {
+		case "all":
+			s.All = true
+		case "none", "":
+			// disabled: All stays false, Scopes empty
+		default:
+			s.Scopes = []string{one}
+		}
+		return nil
+	}
+	var many []string
+	if err := value.Decode(&many); err != nil {
+		return fmt.Errorf("scope: expected 'all', 'none', a scope name, or a list of names")
+	}
+	s.Scopes = many
+	return nil
+}
+
+// resolve reports the effective filter: omitted or "all" => all scopes; otherwise
+// the explicit list (empty => the sink receives nothing).
+func (s ScopeSet) resolve() (all bool, scopes []string) {
+	if !s.Set || s.All {
+		return true, nil
+	}
+	return false, s.Scopes
+}
+
+// Options resolves the log config into a logging.Options (filling stderr defaults
+// and leaving telegram nil when absent).
+func (l Log) Options() logging.Options {
+	o := logging.Options{Stderr: logging.SinkSpec{Level: slog.LevelInfo, All: true, Format: "text"}}
+	if l.Stderr != nil {
+		o.Stderr = sinkSpec(l.Stderr.Level, l.Stderr.Format, l.Stderr.Scope)
+	}
+	if l.Telegram != nil {
+		o.Telegram = &logging.TelegramSpec{
+			SinkSpec: sinkSpec(l.Telegram.Level, l.Telegram.Format, l.Telegram.Scope),
+			BotToken: l.Telegram.BotToken,
+			ChatID:   l.Telegram.ChatID,
+		}
+	}
+	return o
+}
+
+func sinkSpec(level, format string, scope ScopeSet) logging.SinkSpec {
+	if format == "" {
+		format = "text"
+	}
+	all, scopes := scope.resolve()
+	return logging.SinkSpec{Level: parseLevel(level), All: all, Scopes: scopes, Format: format}
+}
+
+func parseLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // Default values applied before unmarshalling (§19.2). The detector is left nil
@@ -147,7 +252,6 @@ func defaults() Config {
 				Direction: "ingress",
 			},
 		},
-		Log: Log{Level: "info", Format: "text"},
 	}
 }
 
@@ -171,13 +275,21 @@ func (c *Config) applyDetectorDefaults() {
 	}
 }
 
-// Load reads, parses and validates the YAML config at path.
+// Load reads, parses and validates the YAML config at path. When persist is left
+// empty it defaults to persist.dump alongside the config file.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
-	return Parse(data)
+	cfg, err := Parse(data)
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.Persist == "" {
+		cfg.Persist = filepath.Join(filepath.Dir(path), "persist.dump")
+	}
+	return cfg, nil
 }
 
 // Parse parses and validates YAML config bytes, applying defaults first.
@@ -266,6 +378,52 @@ func (c Config) Validate() error {
 		}
 		if c.Detector.VPPStatsEnabled() && c.Detector.VPPStats.Interval.Duration() <= 0 {
 			return fmt.Errorf("detector.vpp_stats.interval must be > 0")
+		}
+	}
+	if err := validateLog(c.Log); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateLog(l Log) error {
+	if l.Stderr != nil {
+		if err := validateLogSink("log.stderr", l.Stderr.Level, l.Stderr.Format, l.Stderr.Scope); err != nil {
+			return err
+		}
+	}
+	if l.Telegram != nil {
+		if err := validateLogSink("log.telegram", l.Telegram.Level, l.Telegram.Format, l.Telegram.Scope); err != nil {
+			return err
+		}
+		if l.Telegram.BotToken == "" {
+			return fmt.Errorf("log.telegram.bot_token must be set")
+		}
+		if l.Telegram.ChatID == "" {
+			return fmt.Errorf("log.telegram.chat_id must be set")
+		}
+	}
+	return nil
+}
+
+func validateLogSink(name, level, format string, scope ScopeSet) error {
+	if level != "" {
+		switch strings.ToLower(level) {
+		case "debug", "info", "warn", "error":
+		default:
+			return fmt.Errorf("%s.level %q must be debug|info|warn|error", name, level)
+		}
+	}
+	if format != "" {
+		switch strings.ToLower(format) {
+		case "text", "json":
+		default:
+			return fmt.Errorf("%s.format %q must be text|json", name, format)
+		}
+	}
+	for _, s := range scope.Scopes {
+		if !logging.Valid(s) {
+			return fmt.Errorf("%s.scope %q is not a known scope (%s)", name, s, strings.Join(logging.AllScopes, ", "))
 		}
 	}
 	return nil

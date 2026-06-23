@@ -1,9 +1,12 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 
@@ -106,6 +109,26 @@ func TestAnnounceWithdraw_SingleSession(t *testing.T) {
 	m.Apply(ctx, wd("s1", "10.0.0.1", v4UDPRule(t, "203.0.113.10/32", 443)))
 	if fb.count(vpp.IPv4) != 0 {
 		t.Fatalf("after withdraw: %d entries, want 0", fb.count(vpp.IPv4))
+	}
+}
+
+// Apply and withdraw of a rule must surface at info level (not debug), so the
+// telegram/acl-scope sink receives them.
+func TestApplyWithdraw_LogsAtInfo(t *testing.T) {
+	var buf bytes.Buffer
+	lg := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	fb := newFake()
+	m := New(fb, nil, lg)
+	ctx := context.Background()
+
+	m.Apply(ctx, ann("s1", "10.0.0.1", v4UDPRule(t, "203.0.113.10/32", 443)))
+	if !strings.Contains(buf.String(), "flowspec rule applied") {
+		t.Errorf("apply not logged at info: %q", buf.String())
+	}
+	buf.Reset()
+	m.Apply(ctx, wd("s1", "10.0.0.1", v4UDPRule(t, "203.0.113.10/32", 443)))
+	if !strings.Contains(buf.String(), "flowspec rule withdrawn") {
+		t.Errorf("withdraw not logged at info: %q", buf.String())
 	}
 }
 

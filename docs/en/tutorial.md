@@ -144,7 +144,7 @@ The `/run/vpp` mount is unchanged.
 ## 6. Run the binary directly (no container)
 
 ```sh
-sudo ./bin/flowspec-vpp-agent -config /path/to/config.yaml
+sudo ./bin/flowspec-vpp-agent --config /path/to/config.yaml
 ```
 
 The agent accesses the VPP socket as root and retries with backoff when the socket

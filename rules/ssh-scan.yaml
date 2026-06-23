@@ -1,59 +1,68 @@
-# Predefined: detect TCP scanning of port 22 from a single source and block ALL
-# traffic from that source. One rule per address family. Enable with
-# detector.rules_enabled: [ssh-scan-ipv4, ssh-scan-ipv6].
+# Predefined: detect TCP scanning of port 22 from a single source. One rule per
+# address family. Enable with detector.rules_enabled: [ssh-scan-ipv4, ssh-scan-ipv6].
 #
-# Every match and aggregate field is written out (including the pass-through
-# defaults) so the instance identity is explicit:
-#   - match     selects which packets are counted (tcp -> port 22).
-#   - aggregate sets the descriptor granularity. src/32 makes the scanning host
-#     the identity; everything else is aggregated away (dst/0, proto all, ports
-#     all) so a single source is one instance regardless of who/what it scanned.
-# Because proto and ports are aggregated to "all", the emitted FlowSpec blocks
-# every protocol and port from the source, not just tcp/22.
+# False-positive safety (this is the hard part of source-based blocking):
+#   - We count CONNECTION ATTEMPTS, not data: match `tcp_flags: syn !ack`, so an
+#     established session's data packets never inflate the rate — only new SYNs do.
+#     A scanner emits a flood of SYNs (≈1 per probed host); a legitimate user emits
+#     a handful, far below the threshold.
+#   - We block only the SCAN VECTOR, not the host: aggregate keeps proto (tcp) and
+#     dst_port (22) exact, so the emitted FlowSpec is "drop tcp dst-port 22 SYN
+#     from <src>". A false positive therefore only stops that source from opening
+#     NEW ssh connections — established sessions and all of its other traffic
+#     survive. (Earlier this blocked every protocol/port from the source.)
+#
+# Identity is the source host (src/32 or /128); dst is collapsed (/0) so one
+# source scanning many hosts is a single instance. rank: rate ranks the pool by
+# the same attempt rate the trigger uses.
 rules:
   - name: ssh-scan-ipv4
     match:
       family: ipv4
       proto: tcp
       dst_port: 22
+      tcp_flags: "syn !ack"   # count connection ATTEMPTS, not session data
     aggregate:
-      proto: all      # identity ignores protocol; emit blocks all protocols
-      src: "/32"      # identity = the scanning source host
-      dst: "/0"       # all destinations collapse into one instance
+      proto: exact            # keep tcp; emit drops tcp only (not every protocol)
+      src: "/32"              # identity = the scanning source host
+      dst: "/0"               # all destinations collapse into one instance
       src_port: all
-      dst_port: all
+      dst_port: exact         # keep 22; emit drops only port 22 (not every port)
+    rank: rate
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: pps, window: 30s }
-      expr: "rate > 1000"
+      expr: "rate > 1000"     # 1000 SSH connection attempts/s from one source
       sustained: 30s
     flowspec:
       action: drop
       ttl: 600s
       refresh: true
-      # family/src_prefix default from the descriptor (ipv4, src/32); proto and
-      # ports default to wildcard because they were aggregated to "all".
-    description: "ssh scan (ipv4) from {{src}}, pps={{rate}}"
+      # emitted: drop tcp dst-port 22 SYN from src (tcp_flags defaults to the
+      # match filter). Surgical: only this source's new ssh connections are shed.
+    description: "ssh scan (ipv4) from {{src}}, attempts/s={{rate}}"
 
   - name: ssh-scan-ipv6
     match:
       family: ipv6
       proto: tcp
       dst_port: 22
+      tcp_flags: "syn !ack"
     aggregate:
-      proto: all
-      src: "/128"     # identity = the scanning source host (use /64 for the subnet)
+      proto: exact
+      src: "/128"             # identity = the scanning source host (use /64 for the subnet)
       dst: "/0"
       src_port: all
-      dst_port: all
+      dst_port: exact
+    rank: rate
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: pps, window: 30s }
@@ -63,4 +72,4 @@ rules:
       action: drop
       ttl: 600s
       refresh: true
-    description: "ssh scan (ipv6) from {{src}}, pps={{rate}}"
+    description: "ssh scan (ipv6) from {{src}}, attempts/s={{rate}}"

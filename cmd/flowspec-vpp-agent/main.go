@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,17 +14,18 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/spf13/pflag"
 
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/bgp"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/config"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/detector"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/localrules"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/logging"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/manager"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/metrics"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/sflow"
@@ -48,8 +48,8 @@ func main() {
 		}
 	}
 
-	cfgPath := flag.String("config", defaultConfigPath, "path to config.yaml")
-	flag.Parse()
+	cfgPath := pflag.StringP("config", "c", defaultConfigPath, "path to config.yaml")
+	pflag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -57,11 +57,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := newLogger(cfg.Log)
-	logger.Info("starting flowspec-vpp-agent", "version", version.String())
+	logger, logCloser := logging.New(cfg.Log.Options())
+	defer logCloser.Close()
+	clog := logger.With(logging.KeyScope, logging.ScopeCore)
+	clog.Info("starting flowspec-vpp-agent", "version", version.String())
 
 	if err := run(cfg, logger); err != nil {
-		logger.Error("fatal", "error", err)
+		clog.Error("fatal", "error", err)
 		os.Exit(1)
 	}
 }
@@ -70,28 +72,32 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// clog carries the "core" scope for the agent's own lifecycle messages; each
+	// subsystem below gets its own scope so sinks can filter by category.
+	clog := logger.With(logging.KeyScope, logging.ScopeCore)
+
 	// Metrics collectors are always active internally; the HTTP endpoint is
 	// opt-in, so default deployments do not expose an extra listener.
 	reg := prometheus.NewRegistry()
 	met := metrics.New(reg)
 	status := &statusProvider{}
-	httpSrv := startHTTP(cfg.Metrics.Listen, reg, status, logger)
-	defer shutdownHTTP(httpSrv, logger)
+	httpSrv := startHTTP(cfg.Metrics.Listen, reg, status, clog)
+	defer shutdownHTTP(httpSrv, clog)
 
 	// Connect to VPP with backoff (§19.3: never crash on an unready socket).
-	logger.Info("connecting to VPP", "socket", cfg.VPP.Socket)
+	clog.Info("connecting to VPP", "socket", cfg.VPP.Socket)
 	vppClient, err := vpp.Connect(ctx, vpp.ClientConfig{
 		Socket:        cfg.VPP.Socket,
 		InterfaceMode: cfg.ACL.Interfaces.Mode,
 		InterfaceList: cfg.ACL.Interfaces.List,
 		Direction:     direction(cfg.ACL.Interfaces.Direction),
-	}, logger)
+	}, logger.With(logging.KeyScope, logging.ScopeVPP))
 	if err != nil {
 		return fmt.Errorf("connect VPP: %w", err)
 	}
 	defer vppClient.Close()
 
-	mgr := manager.New(vppClient, met, logger)
+	mgr := manager.New(vppClient, met, logger.With(logging.KeyScope, logging.ScopeACL))
 
 	// Merge BGP updates with reconnect-driven resyncs onto a single channel so the
 	// manager stays single-goroutine (§17).
@@ -107,7 +113,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// deployment programs VPP directly through the same updates channel.
 	var bgpSrv *bgp.Server
 	if cfg.BGPEnabled() {
-		bgpSrv = bgp.New(toBGPOptions(cfg.BGP), logger)
+		bgpSrv = bgp.New(toBGPOptions(cfg.BGP), logger.With(logging.KeyScope, logging.ScopeBGP))
 		if err := bgpSrv.Start(ctx); err != nil {
 			return fmt.Errorf("start BGP: %w", err)
 		}
@@ -123,70 +129,116 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			}
 		}()
 	} else {
-		logger.Info("BGP disabled (no peers configured)")
+		clog.Info("BGP disabled (no peers configured)")
 	}
+
+	// onShutdown runs after the manager loop returns (and the detector runner has
+	// stopped) to persist state, when configured.
+	var onShutdown func()
 
 	if cfg.DetectorEnabled() {
 		det := cfg.Detector
+		dlog := logger.With(logging.KeyScope, logging.ScopeDetector)
 		rules, err := compileDetectorRules(det)
 		if err != nil {
 			return err
 		}
-		logDetectorConfig(logger, det, len(rules))
+		logDetectorConfig(clog, det, len(rules))
 
 		samples := make(chan detector.Sample, det.SampleQueue)
 		events := make(chan detector.Event, det.EventQueue)
 
-		collector := sflow.NewCollector(det.SFlow.Listen, samples, logger)
+		collector := sflow.NewCollector(det.SFlow.Listen, samples, dlog)
 		if err := collector.Listen(); err != nil {
 			return fmt.Errorf("listen sFlow: %w", err)
 		}
 		go func() {
 			if err := collector.Run(ctx); err != nil {
-				logger.Error("sFlow collector failed", "error", err)
+				dlog.Error("sFlow collector failed", "error", err)
 				stop()
 			}
 		}()
 
 		engine := detector.NewEngine(rules)
-		logger.Info("detector memory estimate",
+		clog.Info("detector memory estimate",
 			"rules", len(rules),
 			"bytes", engine.MemoryEstimate(),
 			"human", humanBytes(engine.MemoryEstimate()),
 			"note", "upper bound at full max_instances")
 		var statsView detector.StatsView
+		var statsStore *vppstats.Store
 		if det.VPPStatsEnabled() {
-			store := vppstats.NewStore(vppRingConfig(det.VPPStats))
-			statsView = store
-			status.setStats(store)
+			statsStore = vppstats.NewStore(vppRingConfig(det.VPPStats))
+			statsView = statsStore
+			status.setStats(statsStore)
 			poller := vppstats.NewPoller(vppstats.Options{
 				Socket:   cfg.VPP.StatsSocket,
 				Interval: det.VPPStats.Interval.Duration(),
-			}, store, logger)
+			}, statsStore, dlog)
 			go poller.Run(ctx)
 		}
-		runner := detector.NewRunnerWithContext(engine, samples, events, detector.EvalContext{Stats: statsView}, logger)
+
+		// Reload persisted history before the engine starts observing. Missing
+		// rules, changed rule definitions, and changed ring shapes are skipped by
+		// Import. Persist defaults to persist.dump next to the config (see config.Load).
+		if cfg.Persist != "" {
+			if st, err := loadState(cfg.Persist); err != nil {
+				if !os.IsNotExist(err) {
+					clog.Warn("load detector state", "file", cfg.Persist, "error", err)
+				}
+			} else {
+				engine.Import(st.Detector)
+				if statsStore != nil {
+					statsStore.Import(st.VPP)
+				}
+				clog.Info("loaded persisted detector state", "file", cfg.Persist)
+			}
+		}
+
+		runner := detector.NewRunnerWithContext(engine, samples, events, detector.EvalContext{Stats: statsView}, dlog)
 		status.setRunner(runner)
-		go runner.Run(ctx)
-		ctrl := localrules.New(updates, logger)
+		runnerDone := make(chan struct{})
+		go func() {
+			runner.Run(ctx)
+			close(runnerDone)
+		}()
+
+		if cfg.Persist != "" {
+			onShutdown = func() {
+				<-runnerDone // engine no longer mutated; safe to export
+				st := agentState{Detector: engine.Export()}
+				if statsStore != nil {
+					st.VPP = statsStore.Export()
+				}
+				if err := saveState(cfg.Persist, st); err != nil {
+					clog.Warn("save detector state", "file", cfg.Persist, "error", err)
+				} else {
+					clog.Info("saved detector state", "file", cfg.Persist)
+				}
+			}
+		}
+		ctrl := localrules.New(updates, dlog)
 		ctrl.SetDryRun(det.DryRun)
 		// Originate detector leases upstream when any peer is configured to receive
 		// our FlowSpec (the BGP export policy restricts delivery to those peers).
 		if bgpSrv != nil && hasSendPeer(cfg.BGP) {
 			ctrl.SetAdvertiser(bgpSrv)
-			logger.Info("detector leases will be advertised to send peers")
+			clog.Info("detector leases will be advertised to send peers")
 		}
 		status.setLeases(ctrl)
 		if cfg.Detector.DryRun {
-			logger.Info("detector in dry-run mode: events are logged, no ACLs are programmed")
+			clog.Info("detector in dry-run mode: events are logged, no ACLs are programmed")
 		}
 		go ctrl.Run(ctx, events)
 	}
 
-	logger.Info("agent running")
+	clog.Info("agent running")
 	mgr.Run(ctx, updates) // blocks until ctx is cancelled
 
-	logger.Info("shutting down")
+	clog.Info("shutting down")
+	if onShutdown != nil {
+		onShutdown()
+	}
 	return nil
 }
 
@@ -236,26 +288,6 @@ func splitListen(hp string) (host string, port int) {
 	return host, port
 }
 
-func newLogger(l config.Log) *slog.Logger {
-	level := slog.LevelInfo
-	switch strings.ToLower(l.Level) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	}
-	opts := &slog.HandlerOptions{Level: level}
-	var h slog.Handler
-	if strings.ToLower(l.Format) == "json" {
-		h = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
-		h = slog.NewTextHandler(os.Stderr, opts)
-	}
-	return slog.New(h)
-}
-
 func startHTTP(addr string, reg *prometheus.Registry, status *statusProvider, logger *slog.Logger) *http.Server {
 	if addr == "" {
 		logger.Info("metrics/health endpoint disabled")
@@ -293,8 +325,8 @@ func shutdownHTTP(srv *http.Server, logger *slog.Logger) {
 // healthcheck (§19.1). When the optional HTTP endpoint is enabled, it GETs the
 // local /healthz endpoint; when it is disabled, there is no listener to probe.
 func runHealthcheck(args []string) int {
-	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
-	cfgPath := fs.String("config", defaultConfigPath, "path to config.yaml")
+	fs := pflag.NewFlagSet("healthcheck", pflag.ContinueOnError)
+	cfgPath := fs.StringP("config", "c", defaultConfigPath, "path to config.yaml")
 	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*cfgPath)

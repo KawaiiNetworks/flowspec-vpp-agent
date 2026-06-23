@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParse_Defaults(t *testing.T) {
 	cfg, err := Parse([]byte(`
@@ -185,11 +190,116 @@ func TestValidate_Errors(t *testing.T) {
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n", // missing peer_asn
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n      peer_asn: 1\n      receive: false\n      send: false\n", // no-op peer
-		"vpp:\n  socket: /run/vpp/api.sock\n", // nothing to do: no peers, no detector
+		"vpp:\n  socket: /run/vpp/api.sock\n",                                       // nothing to do: no peers, no detector
+		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    level: bogus\n",      // bad log level
+		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    format: bogus\n",     // bad log format
+		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    scope: [nonsense]\n", // unknown scope
+		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    chat_id: c\n",      // telegram missing bot_token
+		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    bot_token: t\n",    // telegram missing chat_id
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
 			t.Errorf("expected error for config:\n%s", c)
 		}
+	}
+}
+
+// The log block resolves into a logging.Options with stderr defaults and an
+// optional telegram sink.
+func TestParse_LogSinks(t *testing.T) {
+	cfg, err := Parse([]byte(`
+detector:
+  rules_enabled: [udp-flood-ipv4]
+log:
+  stderr:
+    level: warn
+    scope: [detector, acl]
+    format: json
+  telegram:
+    bot_token: "123:ABC"
+    chat_id: "-100"
+    level: info
+    scope: detector
+    format: text
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := cfg.Log.Options()
+	if o.Stderr.Level != slog.LevelWarn || o.Stderr.All || o.Stderr.Format != "json" {
+		t.Errorf("stderr spec = %+v", o.Stderr)
+	}
+	if len(o.Stderr.Scopes) != 2 {
+		t.Errorf("stderr scopes = %v", o.Stderr.Scopes)
+	}
+	if o.Telegram == nil {
+		t.Fatal("telegram sink should be present")
+	}
+	if o.Telegram.BotToken != "123:ABC" || o.Telegram.ChatID != "-100" {
+		t.Errorf("telegram creds = %+v", o.Telegram)
+	}
+	if o.Telegram.Level != slog.LevelInfo || o.Telegram.All {
+		t.Errorf("telegram spec = %+v", o.Telegram.SinkSpec)
+	}
+	if len(o.Telegram.Scopes) != 1 || o.Telegram.Scopes[0] != "detector" {
+		t.Errorf("telegram scopes = %v", o.Telegram.Scopes)
+	}
+}
+
+// Omitting the log block yields the default stderr sink (info/all/text), no telegram.
+func TestParse_LogDefault(t *testing.T) {
+	cfg, err := Parse([]byte("detector:\n  rules_enabled: [x]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := cfg.Log.Options()
+	if o.Stderr.Level != slog.LevelInfo || !o.Stderr.All || o.Stderr.Format != "text" {
+		t.Errorf("default stderr = %+v", o.Stderr)
+	}
+	if o.Telegram != nil {
+		t.Error("telegram should be nil by default")
+	}
+}
+
+// scope: none disables a sink (not "all", empty scope set).
+func TestParse_LogScopeNone(t *testing.T) {
+	cfg, err := Parse([]byte("detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    scope: none\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := cfg.Log.Options()
+	if o.Stderr.All || len(o.Stderr.Scopes) != 0 {
+		t.Errorf("scope none => all=%v scopes=%v, want all=false empty", o.Stderr.All, o.Stderr.Scopes)
+	}
+}
+
+// persist defaults to persist.dump next to the config file, and an explicit value
+// is honored verbatim.
+func TestLoad_PersistDefault(t *testing.T) {
+	dir := t.TempDir()
+	body := "detector:\n  rules_enabled: [udp-flood-ipv4]\n"
+
+	def := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(def, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "persist.dump"); cfg.Persist != want {
+		t.Errorf("default persist = %q, want %q", cfg.Persist, want)
+	}
+
+	explicit := filepath.Join(dir, "explicit.yaml")
+	if err := os.WriteFile(explicit, []byte(body+"persist: /var/lib/agent/state.dump\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Persist != "/var/lib/agent/state.dump" {
+		t.Errorf("explicit persist = %q", cfg.Persist)
 	}
 }

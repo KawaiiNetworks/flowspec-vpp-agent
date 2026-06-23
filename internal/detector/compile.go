@@ -64,7 +64,7 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 	if cfg.Name == "" {
 		return nil, fmt.Errorf("name must be set")
 	}
-	r := &Rule{name: cfg.Name}
+	r := &Rule{name: cfg.Name, fingerprint: ruleFingerprint(cfg)}
 
 	// --- match: family filter ---
 	fam, famSet, err := parseFamily(cfg.Match.Family)
@@ -158,6 +158,7 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 	}
 	r.history = hist
 	r.store = newInstanceStore(hist)
+	r.sketch = newHeavyKeeper(sketchWidth(hist.maxInstances), sketchDepth, heavyKeeperDecay)
 
 	// --- trigger: terms + expression ---
 	terms, err := compileTerms(cfg.Trigger, hist)
@@ -165,6 +166,10 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 		return nil, err
 	}
 	r.terms = terms
+	r.rankBytes, r.halfLife, err = resolveRank(cfg.Rank, terms)
+	if err != nil {
+		return nil, err
+	}
 	names := make([]string, 0, len(terms))
 	for _, t := range terms {
 		names = append(names, t.name)
@@ -513,6 +518,31 @@ func compileRing(c RingConfig, field string) (time.Duration, int, error) {
 		return 0, 0, fmt.Errorf("%s must have at least one slot", field)
 	}
 	return res, slots, nil
+}
+
+// resolveRank maps the rule's `rank` term name to the admission sketch settings:
+// whether to weight by bytes (a bps term) and the decay half-life (the term's
+// window, so the rank estimate is smoothed over the same span the term spans). An
+// empty rank ranks by packet rate over the default half-life. A vpp.* term cannot
+// rank (it is interface-level, not per-target).
+func resolveRank(name string, terms []*term) (rankBytes bool, halfLife time.Duration, err error) {
+	if name == "" {
+		return false, sketchHalfLife, nil
+	}
+	for _, t := range terms {
+		if t.name != name {
+			continue
+		}
+		if t.metric.isStats() {
+			return false, 0, fmt.Errorf("rank %q is a vpp.* term; rank must reference a pps or bps term", name)
+		}
+		hl := t.window
+		if hl <= 0 {
+			hl = sketchHalfLife
+		}
+		return t.metric == metricBPS, hl, nil
+	}
+	return false, 0, fmt.Errorf("rank %q is not a defined trigger term", name)
 }
 
 func compileTerms(c TriggerConfig, hist historySpec) ([]*term, error) {

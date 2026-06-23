@@ -136,7 +136,8 @@ func (m *Manager) announce(ctx context.Context, u bgp.Update) {
 	key := acl.Key()
 	fam := familyOf(acl)
 
-	if oldKey, ok := m.routeKey(routeID, u.Session); ok && oldKey == key {
+	oldKey, hadOld := m.routeKey(routeID, u.Session)
+	if hadOld && oldKey == key {
 		return
 	}
 	if oldFam, dirty := m.replaceRoute(routeID, key, u.Session); dirty {
@@ -146,7 +147,11 @@ func (m *Manager) announce(ctx context.Context, u bgp.Update) {
 	m.rememberRoute(routeID, key, u.Session)
 	if dirty {
 		m.metrics.RuleApplied(r.Family.String(), u.Peer)
-		m.log.Debug("flowspec rule applied",
+		msg := "flowspec rule applied"
+		if hadOld {
+			msg = "flowspec rule updated"
+		}
+		m.log.Info(msg,
 			"session", u.Session, "peer", u.Peer, "family", r.Family.String(), "key", key)
 		dirtyFams[fam] = struct{}{}
 	}
@@ -160,6 +165,8 @@ func (m *Manager) withdraw(ctx context.Context, u bgp.Update) {
 		return
 	}
 	if fam, dirty := m.removeRoute(routeIdentity(*u.Rule), u.Session); dirty {
+		m.log.Info("flowspec rule withdrawn",
+			"session", u.Session, "peer", u.Peer, "family", u.Rule.Family.String())
 		m.reconcile(ctx, fam)
 	}
 }

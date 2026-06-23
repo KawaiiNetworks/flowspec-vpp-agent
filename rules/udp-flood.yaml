@@ -9,14 +9,15 @@ rules:
   - name: udp-flood-ipv4
     match: { family: ipv4, proto: udp }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
+    rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 500000"   # 500 kpps of UDP to one victim
+      expr: "pps > 100000"   # 100 kpps of UDP to one victim
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "udp flood to {{dst}}, pps={{pps}}"
@@ -24,14 +25,15 @@ rules:
   - name: udp-flood-ipv6
     match: { family: ipv6, proto: udp }
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
+    rank: pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 500000"
+      expr: "pps > 100000"
       sustained: 10s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "udp flood to {{dst}}, pps={{pps}}"

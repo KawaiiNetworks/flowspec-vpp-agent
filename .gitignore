@@ -1,0 +1,21 @@
+# Build output
+/bin/
+/dist/
+/flowspec-vpp-agent
+
+# Go test / coverage artifacts
+*.test
+*.out
+coverage.*
+
+# Persisted detector + VPP stats state dumps (default: persist.dump next to config)
+*.dump
+
+# Local environment / secrets
+.env
+*.local
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~

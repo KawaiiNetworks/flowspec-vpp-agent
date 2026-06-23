@@ -10,10 +10,11 @@ rules:
   - name: dns-reflection
     match: { family: ipv4, proto: udp, src_port: 53 }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    rank: rate   # keep the highest-bps victims (reflection = big packets), not highest-pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: bps, window: 10s }
@@ -25,10 +26,11 @@ rules:
   - name: ntp-reflection
     match: { family: ipv4, proto: udp, src_port: 123 }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    rank: rate   # keep the highest-bps victims (reflection = big packets), not highest-pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: bps, window: 10s }
@@ -40,10 +42,11 @@ rules:
   - name: memcached-reflection
     match: { family: ipv4, proto: udp, src_port: 11211 }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    rank: rate   # keep the highest-bps victims (reflection = big packets), not highest-pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: bps, window: 10s }
@@ -55,10 +58,11 @@ rules:
   - name: ssdp-reflection
     match: { family: ipv4, proto: udp, src_port: 1900 }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    rank: rate   # keep the highest-bps victims (reflection = big packets), not highest-pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: bps, window: 10s }
@@ -70,10 +74,11 @@ rules:
   - name: cldap-reflection
     match: { family: ipv4, proto: udp, src_port: 389 }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    rank: rate   # keep the highest-bps victims (reflection = big packets), not highest-pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: bps, window: 10s }
@@ -85,10 +90,11 @@ rules:
   - name: snmp-reflection
     match: { family: ipv4, proto: udp, src_port: 161 }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    rank: rate   # keep the highest-bps victims (reflection = big packets), not highest-pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: bps, window: 10s }
@@ -100,10 +106,11 @@ rules:
   - name: chargen-reflection
     match: { family: ipv4, proto: udp, src_port: 19 }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
+    rank: rate   # keep the highest-bps victims (reflection = big packets), not highest-pps
     history:
       fine: { resolution: 1s, duration: 10m }
       medium: { resolution: 1m, duration: 1d }
-      max_instances: 20
+      max_instances: 100
     trigger:
       terms:
         rate: { metric: bps, window: 10s }

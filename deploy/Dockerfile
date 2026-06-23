@@ -26,4 +26,4 @@ COPY --from=builder /flowspec-vpp-agent /flowspec-vpp-agent
 # Runs as root in deployment (see compose user: "0:0") to access /run/vpp/api.sock.
 EXPOSE 10179
 ENTRYPOINT ["/flowspec-vpp-agent"]
-CMD ["-config", "/etc/flowspec-vpp-agent/config.yaml"]
+CMD ["--config", "/etc/flowspec-vpp-agent/config.yaml"]

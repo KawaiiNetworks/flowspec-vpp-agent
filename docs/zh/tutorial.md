@@ -131,7 +131,7 @@ ports:
 ## 6. 直接跑二进制（非容器）
 
 ```sh
-sudo ./bin/flowspec-vpp-agent -config /path/to/config.yaml
+sudo ./bin/flowspec-vpp-agent --config /path/to/config.yaml
 ```
 
 agent 会以 root 访问 VPP socket；socket 未就绪或 VPP 重启时退避重连。可配合任意进程管理器
