@@ -7,12 +7,12 @@ import (
 
 func TestStoreFixedRingSizes(t *testing.T) {
 	cfg := RingConfig{
-		DayResolution:   time.Second,
-		DayDuration:     10 * time.Second,
-		WeekResolution:  10 * time.Second,
-		WeekDuration:    time.Minute,
-		MonthResolution: time.Minute,
-		MonthDuration:   5 * time.Minute,
+		FineResolution:   time.Second,
+		FineDuration:     10 * time.Second,
+		MediumResolution: 10 * time.Second,
+		MediumDuration:   time.Minute,
+		CoarseResolution: time.Minute,
+		CoarseDuration:   5 * time.Minute,
 	}
 	s := NewStore(cfg)
 	now := time.Unix(1000, 0)
@@ -23,12 +23,76 @@ func TestStoreFixedRingSizes(t *testing.T) {
 		t.Fatalf("interfaces = %d, want 1", s.Interfaces())
 	}
 	r := s.rings["eth0"]
-	if len(r.day.slots) != 10 || len(r.week.slots) != 6 || len(r.month.slots) != 5 {
-		t.Fatalf("ring sizes = day %d week %d month %d", len(r.day.slots), len(r.week.slots), len(r.month.slots))
+	if len(r.fine.slots) != 10 || len(r.medium.slots) != 6 || len(r.coarse.slots) != 5 {
+		t.Fatalf("ring sizes = fine %d medium %d coarse %d", len(r.fine.slots), len(r.medium.slots), len(r.coarse.slots))
 	}
 	rates, ok := s.InterfaceRates("eth0")
 	if !ok || rates.RXPPS != 99 {
 		t.Fatalf("interface rates = %v/%f, want found rx 99", ok, rates.RXPPS)
+	}
+}
+
+// NewStore fills any unset ring dimension from the defaults.
+func TestStoreRingDefaults(t *testing.T) {
+	s := NewStore(RingConfig{FineResolution: 2 * time.Second}) // only fine resolution set
+	d := DefaultRingConfig()
+	if s.config.FineResolution != 2*time.Second {
+		t.Errorf("fine resolution = %s, want 2s", s.config.FineResolution)
+	}
+	if s.config.FineDuration != d.FineDuration || s.config.MediumResolution != d.MediumResolution {
+		t.Errorf("defaults not filled: %+v", s.config)
+	}
+}
+
+// A windowed average over the fine ring; an offset window excludes recent slots.
+func TestStoreInterfaceWindow(t *testing.T) {
+	cfg := RingConfig{
+		FineResolution: time.Second, FineDuration: time.Minute,
+		MediumResolution: time.Minute, MediumDuration: time.Hour,
+		CoarseResolution: time.Hour, CoarseDuration: 24 * time.Hour,
+	}
+	s := NewStore(cfg)
+	base := time.Unix(10000, 0)
+	// One sample per second for 10s: RXPPS = 0,10,20,...,90.
+	for i := 0; i < 10; i++ {
+		s.Add(Sample{At: base.Add(time.Duration(i) * time.Second), Name: "eth0", RXPPS: float64(i * 10)})
+	}
+	now := base.Add(9 * time.Second)
+
+	// Mean over the last 10s = mean(0..90) = 45.
+	r, ok := s.InterfaceWindow("eth0", now, 10*time.Second, 0, false)
+	if !ok || r.RXPPS != 45 {
+		t.Fatalf("avg window = %v/%f, want 45", ok, r.RXPPS)
+	}
+	// Peak over the last 10s = 90.
+	r, ok = s.InterfaceWindow("eth0", now, 10*time.Second, 0, true)
+	if !ok || r.RXPPS != 90 {
+		t.Fatalf("peak window = %v/%f, want 90", ok, r.RXPPS)
+	}
+	// Window 5s ending 5s ago covers samples 0..4 (0,10,20,30,40) -> mean 20.
+	r, ok = s.InterfaceWindow("eth0", now, 5*time.Second, 5*time.Second, false)
+	if !ok || r.RXPPS != 20 {
+		t.Fatalf("offset window = %v/%f, want 20", ok, r.RXPPS)
+	}
+	// A window beyond every ring's span is not covered.
+	if _, ok := s.InterfaceWindow("eth0", now, 48*time.Hour, 0, false); ok {
+		t.Fatal("window beyond coarse span should not be covered")
+	}
+}
+
+func TestRingConfigCovers(t *testing.T) {
+	c := DefaultRingConfig() // fine 1s/5m, medium 1m/1d, coarse 1h/30d
+	if !c.Covers(10*time.Second, 0) {
+		t.Error("10s should be covered by fine")
+	}
+	if !c.Covers(2*time.Hour, time.Hour) {
+		t.Error("2h+1h should be covered by coarse")
+	}
+	if c.Covers(500*time.Millisecond, 0) {
+		t.Error("sub-resolution window must not be covered")
+	}
+	if c.Covers(365*24*time.Hour, 0) {
+		t.Error("window beyond coarse span must not be covered")
 	}
 }
 

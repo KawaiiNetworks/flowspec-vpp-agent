@@ -72,6 +72,25 @@ func (r *Rule) UsesVPPStats() bool {
 	return false
 }
 
+// StatsWindow is one VPP-stats term's window/offset, used by the caller to
+// validate it against the configured vpp_stats rings at startup.
+type StatsWindow struct {
+	Window time.Duration
+	Offset time.Duration
+}
+
+// StatsWindows returns the (window, offset) of every windowed VPP-stats term in
+// this rule (instant terms with no window are omitted).
+func (r *Rule) StatsWindows() []StatsWindow {
+	var out []StatsWindow
+	for _, t := range r.terms {
+		if t.metric.isStats() && t.window > 0 {
+			out = append(out, StatsWindow{Window: t.window, Offset: t.offset})
+		}
+	}
+	return out
+}
+
 // Observe folds one matching sample into the rule's instance rings. It performs
 // no trigger work; evaluation happens on Tick.
 func (r *Rule) Observe(s Sample) {
@@ -212,7 +231,7 @@ func (r *Rule) evalInstance(inst *instance, now time.Time, ctx EvalContext) (*Ev
 
 func (r *Rule) termValue(t *term, inst *instance, now time.Time, ctx EvalContext) float64 {
 	if t.metric.isStats() {
-		return statsValue(t.metric, inst.lastIngressIf, ctx)
+		return statsValue(t, inst.lastIngressIf, now, ctx)
 	}
 	ring := inst.ringFor(t.ring)
 	if ring == nil {
@@ -221,17 +240,40 @@ func (r *Rule) termValue(t *term, inst *instance, now time.Time, ctx EvalContext
 	return ring.aggregate(now, t)
 }
 
-func statsValue(m metricKind, ingressIf string, ctx EvalContext) float64 {
+// statsValue reads a VPP-stats term: instant (no window) from the latest poll,
+// or aggregated over the term's window/offset from the stats rings.
+func statsValue(t *term, ingressIf string, now time.Time, ctx EvalContext) float64 {
 	if ctx.Stats == nil {
 		return 0
 	}
+	m := t.metric
+	if t.window <= 0 {
+		// Instant: latest poll.
+		if m.isTotal() {
+			return m.selectRate(ctx.Stats.TotalRates())
+		}
+		if ingressIf == "" {
+			return 0
+		}
+		rates, ok := ctx.Stats.InterfaceRates(ingressIf)
+		if !ok {
+			return 0
+		}
+		return m.selectRate(rates)
+	}
+	// Windowed: aggregate over the configured rings.
+	peak := t.agg == aggMax
 	if m.isTotal() {
-		return m.selectRate(ctx.Stats.TotalRates())
+		rates, ok := ctx.Stats.TotalWindow(now, t.window, t.offset, peak)
+		if !ok {
+			return 0
+		}
+		return m.selectRate(rates)
 	}
 	if ingressIf == "" {
 		return 0
 	}
-	rates, ok := ctx.Stats.InterfaceRates(ingressIf)
+	rates, ok := ctx.Stats.InterfaceWindow(ingressIf, now, t.window, t.offset, peak)
 	if !ok {
 		return 0
 	}

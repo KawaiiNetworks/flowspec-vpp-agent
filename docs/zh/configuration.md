@@ -26,7 +26,7 @@ vpp:
 | 字段           | 类型   | 默认值                  | 说明 |
 | -------------- | ------ | ----------------------- | ---- |
 | `socket`       | string | `/run/vpp/api.sock`     | VPP **binary API** unix socket 路径。agent 通过它下发 `acl_add_replace`、枚举接口、挂载 ACL。**必填**（不能为空）。 |
-| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket 路径。启用 `detector.vpp_stats` 时用于读取接口计数器。 |
+| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket 路径。配置了 `detector.vpp_stats` 块时用于读取接口计数器。 |
 
 > 容器里访问 socket：`/run/vpp` 通常 root（或 vpp 组）持有，compose 用 `user: "0:0"` 最省事；socket 未就绪或 VPP 重启时 agent 会退避重连，不会启动即崩。
 
@@ -139,9 +139,11 @@ metrics:
 把命中的事件转换成 synthetic FlowSpec 规则走同一条 manager/VPP ACL 路径，并负责 TTL
 刷新与到期撤销。
 
+**检测器由 `detector:` 段的存在来启用** —— 没有 `enabled` 开关。同理，`vpp_stats`
+由 `vpp_stats:` 块的存在来启用；省略对应段即关闭。
+
 ```yaml
 detector:
-  enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
     - dns-reflection
@@ -152,22 +154,24 @@ detector:
     listen: "0.0.0.0:6343"
   sample_queue: 65536
   event_queue: 1024
-  vpp_stats:
-    enabled: true
+  vpp_stats:       # 写了这个块即开启计数器轮询；省略则关闭
     interval: 1s
+    fine:   { resolution: 1s, duration: 5m }
+    medium: { resolution: 1m, duration: 1d }
+    coarse: { resolution: 1h, duration: 30d }
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 | ---- | ---- | ------ | ---- |
-| `enabled` | bool | `false` | 是否启用本机检测器。 |
 | `dry_run` | bool | `false` | 仅记录触发事件的 description，不下发任何 ACL。 |
 | `rules_dir` | string | 空 | 可选的用户规则目录（`*.yaml`）。同名文件覆盖内置规则。 |
-| `rules_enabled` | list | 空 | 要启用的规则名列表。启用检测器时必填；名字在内置预定义规则与 `rules_dir` 中解析。 |
+| `rules_enabled` | list | 空 | 要启用的规则名列表，**必填**（非空）。名字在内置预定义规则与 `rules_dir` 中解析。 |
 | `sflow.listen` | string | `0.0.0.0:6343` | sFlow v5 UDP 监听地址。 |
-| `sample_queue` | int | `65536` | 有界 sample 队列；处理不过来时丢采样，不增长内存。 |
-| `event_queue` | int | `1024` | 有界事件队列。 |
-| `vpp_stats.enabled` | bool | `true` | 是否轮询 VPP 接口计数器并写入固定 ring。 |
-| `vpp_stats.interval` | duration | `1s` | VPP stats 轮询周期。 |
+| `sample_queue` | int | `65536` | 有界 sample 队列（`0` → 用默认）；处理不过来时丢采样，不增长内存。 |
+| `event_queue` | int | `1024` | 有界事件队列（`0` → 用默认）。 |
+| `vpp_stats` | block | 无 | 存在 → 轮询 VPP 接口计数器（启用 `vpp.*` 指标）；省略 → 不轮询，且用了 `vpp.*` 的规则会在启动时被拒绝。 |
+| `vpp_stats.interval` | duration | `1s` | VPP stats 轮询周期（`0`/省略 → `1s`）。 |
+| `vpp_stats.fine` / `medium` / `coarse` | ring | `1s/5m`、`1m/1d`、`1h/30d` | 历史环（与规则 `history` 同一套模型），各含 `resolution` 与 `duration`（某字段为 `0` 用默认）。带 window 的 `vpp.*` term 在能覆盖该窗口的最粗环上聚合；任何环都覆盖不了的窗口会在启动时被拒绝。 |
 
 ### 规则文件
 
@@ -265,9 +269,10 @@ rules:
 
 - `metric`：以下之一
   - `pps`（默认）/ `bps` —— 来自本规则历史环的采样流速率。
-  - VPP stats 指标(来自 stats 轮询器，见下)。它们无需 `window`（读最新一次轮询值，
-    不做窗口聚合）；用到其中任一项的规则要求 `detector.vpp_stats.enabled: true`，
-    否则 agent **拒绝启动**，而不是让该项静默读 0。
+  - VPP stats 指标(来自 stats 轮询器，见下)。用到其中任一项的规则要求检测器下有
+    `vpp_stats:` 块，否则 agent **拒绝启动**，而不是让该项静默读 0。`window` 可选:
+    省略则读最新一次轮询值（瞬时）；设置则在 `vpp_stats` 环上做窗口聚合（可配 `offset`
+    与 `agg: avg|max`，默认 `avg`；这类速率指标**不支持** `sum`）。
 
   VPP stats 指标有两个作用域:
   - `vpp.packet_iface.<字段>` —— **该实例的包进来的那个接口**(最近一次的入站接口)。
@@ -284,7 +289,7 @@ rules:
 
   例如 `vpp.total.rx_bps` 是整机入向比特速率，`vpp.packet_iface.hw_drop_pps`
   是被攻击接口上的网卡级丢包。**没有** `drop_bps`：VPP 的丢包计数器只有包数、没有字节数。
-- `window`：聚合的时间跨度（`pps`/`bps` 必填；`vpp.*` 忽略）。
+- `window`：聚合的时间跨度（`pps`/`bps` 必填；`vpp.*` 可选，省略则读最新一次轮询值）。
 - `offset`（可选）：窗口*结束点*往回退多远——`{window: 10m, offset: 1m}` 覆盖 `[now−11m, now−1m]`,
   用于构造排除近期突增的基线。
 - `agg`（可选）：`avg`（默认,窗口速率）、`max`（单槽峰值速率）、`sum`（总量）。

@@ -1,6 +1,6 @@
 # flowspec-vpp-agent — full configuration reference (§19.2).
 # Each field is set to its default and annotated: [required] / [opt] with the
-# omitted behavior. Need at least one of bgp.peers or detector.enabled:true.
+# omitted behavior. Need at least one of bgp.peers or a detector section.
 # Minimal detector-only config: see config.simple.yaml.
 
 vpp:                                 # [opt] VPP connection sockets; defaults below work as-is
@@ -32,11 +32,10 @@ acl:                                 # [opt] where Managed ACLs attach (local po
 metrics:                             # [opt] HTTP endpoint
   listen: ""                         # [opt] default "" = HTTP disabled; set host:port for /metrics,/healthz,/status
 
-detector:                            # [opt] sFlow/VPP-stats detector
-  enabled: true                      # [opt] default false; false -> detector off
+detector:                            # [opt] sFlow/VPP-stats detector; PRESENCE enables it (no enabled flag)
   dry_run: false                     # [opt] default false; true -> log only, no ACL/announce
   rules_dir: /etc/flowspec-vpp-agent/rules  # [opt] default ""; user rules override built-ins
-  rules_enabled:                     # [req if enabled] non-empty; rule names to activate
+  rules_enabled:                     # [req] non-empty; rule names to activate
     - dns-reflection                 # built-in: DNS reflection
     - ntp-reflection                 # built-in: NTP reflection
     - memcached-reflection           # built-in: memcached reflection
@@ -45,12 +44,14 @@ detector:                            # [opt] sFlow/VPP-stats detector
     - icmp-flood-ipv4                # built-in: ICMP flood (v4)
     - ssh-scan-ipv4                  # built-in: SSH scan (v4)
   sflow:                             # [opt] sFlow collector
-    listen: "0.0.0.0:6343"           # [req if enabled] default; sFlow v5 UDP host:port
-  vpp_stats:                         # [opt] VPP interface counter polling
-    enabled: true                    # [opt] default true; false -> vpp.ingress.* read 0
-    interval: 1s                     # [opt] default 1s; must be >0 when enabled
-  sample_queue: 65536                # [opt] default 65536; >0; overflow drops samples
-  event_queue: 1024                  # [opt] default 1024; >0
+    listen: "0.0.0.0:6343"           # [opt] default; sFlow v5 UDP host:port
+  vpp_stats:                         # [opt] PRESENCE enables VPP counter polling; omit to disable
+    interval: 1s                     # [opt] default 1s; 0/omitted -> 1s
+    fine:   { resolution: 1s, duration: 5m }   # [opt] history rings (like a rule's history);
+    medium: { resolution: 1m, duration: 1d }   #       windowed vpp.* terms aggregate over these;
+    coarse: { resolution: 1h, duration: 30d }  #       a 0 field uses the built-in default
+  sample_queue: 65536                # [opt] default 65536; 0 -> default; overflow drops samples
+  event_queue: 1024                  # [opt] default 1024; 0 -> default
 
 log:                                 # [opt] logging
   level: info                        # [opt] default "info"; debug|info|warn|error

@@ -55,7 +55,6 @@ func TestParse_Detector(t *testing.T) {
 bgp:
   router_id: 192.0.2.1
 detector:
-  enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
     - dns-reflection
@@ -65,14 +64,16 @@ detector:
   sample_queue: 1024
   event_queue: 64
   vpp_stats:
-    enabled: true
     interval: 2s
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Detector.Enabled {
+	if !cfg.DetectorEnabled() {
 		t.Fatal("detector disabled")
+	}
+	if !cfg.Detector.VPPStatsEnabled() {
+		t.Fatal("vpp_stats should be enabled by presence")
 	}
 	if cfg.Detector.VPPStats.Interval.Duration().String() != "2s" {
 		t.Fatalf("stats interval = %s, want 2s", cfg.Detector.VPPStats.Interval.Duration())
@@ -82,6 +83,26 @@ detector:
 	}
 	if cfg.Detector.RulesDir != "/etc/flowspec-vpp-agent/rules" {
 		t.Fatalf("rules_dir = %q", cfg.Detector.RulesDir)
+	}
+}
+
+// vpp_stats omitted => disabled; sub-defaults still fill in for a present detector.
+func TestParse_DetectorDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(`
+detector:
+  rules_enabled: [dns-reflection]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Detector.VPPStatsEnabled() {
+		t.Error("vpp_stats should be disabled when omitted")
+	}
+	if cfg.Detector.SFlow.Listen != "0.0.0.0:6343" {
+		t.Errorf("sflow.listen default = %q", cfg.Detector.SFlow.Listen)
+	}
+	if cfg.Detector.SampleQueue != 65536 || cfg.Detector.EventQueue != 1024 {
+		t.Errorf("queue defaults = %d/%d", cfg.Detector.SampleQueue, cfg.Detector.EventQueue)
 	}
 }
 
@@ -112,7 +133,6 @@ bgp:
 func TestParse_DetectorOnlyNoBGP(t *testing.T) {
 	cfg, err := Parse([]byte(`
 detector:
-  enabled: true
   rules_enabled: [dns-reflection]
 `))
 	if err != nil {
@@ -121,7 +141,7 @@ detector:
 	if cfg.BGPEnabled() {
 		t.Error("BGP should be disabled with no peers")
 	}
-	if !cfg.Detector.Enabled {
+	if !cfg.DetectorEnabled() {
 		t.Error("detector should be enabled")
 	}
 }
@@ -156,16 +176,16 @@ func TestValidate_Errors(t *testing.T) {
 		"bgp:\n  listen: '[not-ip]:10179'\n  router_id: 192.0.2.1\n",
 		"bgp:\n  router_id: 2001:db8::1\n",
 		"metrics:\n  listen: bad-port\n",
-		"detector:\n  enabled: true\n", // missing rules_enabled
-		"detector:\n  enabled: true\n  rules_enabled: [x]\n  sflow:\n    listen: bad\n",
-		"detector:\n  enabled: true\n  rules_enabled: [x]\n  sample_queue: 0\n",
-		"detector:\n  enabled: true\n  rules_enabled: [x]\n  event_queue: 0\n",
+		"detector: {}\n", // present but no rules_enabled
+		"detector:\n  rules_enabled: [x]\n  sflow:\n    listen: bad\n",
+		"detector:\n  rules_enabled: [x]\n  sample_queue: -1\n",
+		"detector:\n  rules_enabled: [x]\n  event_queue: -1\n",
 		"acl:\n  interfaces:\n    mode: bogus\n",
 		"acl:\n  interfaces:\n    mode: list\n", // list mode without list
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",
-		"bgp:\n  peers:\n    - address: 1.2.3.4\n",                                                             // missing peer_asn
+		"bgp:\n  peers:\n    - address: 1.2.3.4\n", // missing peer_asn
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n      peer_asn: 1\n      receive: false\n      send: false\n", // no-op peer
-		"vpp:\n  socket: /run/vpp/api.sock\n",                                                                  // nothing to do: no peers, no detector
+		"vpp:\n  socket: /run/vpp/api.sock\n", // nothing to do: no peers, no detector
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {

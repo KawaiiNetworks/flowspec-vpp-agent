@@ -1,0 +1,28 @@
+# Detector-only deployment: sFlow + VPP + Prometheus, no BGP, no rules_dir.
+# Detection runs locally and programs VPP ACLs directly; metrics/status are
+# exposed over HTTP.
+
+vpp:
+  socket: /run/vpp/api.sock
+  stats_socket: /run/vpp/stats.sock
+
+metrics:
+  # Prometheus /metrics, plus /healthz and /status. Unauthenticated — bind to a
+  # trusted address/network.
+  listen: "0.0.0.0:9469"
+
+detector:
+  # Built-in rules only (no rules_dir).
+  rules_enabled:
+    - dns-reflection
+    - ntp-reflection
+    - memcached-reflection
+    - udp-flood-ipv4
+    - syn-flood-ipv4
+    - icmp-flood-ipv4
+    - ssh-scan-ipv4
+  sflow:
+    listen: "0.0.0.0:6343"
+  vpp_stats:
+    # Presence enables VPP counter polling (so rules can use vpp.* metrics).
+    interval: 1s

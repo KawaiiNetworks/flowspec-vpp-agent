@@ -533,7 +533,27 @@ func compileTerms(c TriggerConfig, hist historySpec) ([]*term, error) {
 			return nil, fmt.Errorf("trigger.terms.%s: %w", name, err)
 		}
 		t := &term{name: name, metric: metric, agg: agg}
-		if !metric.isStats() {
+		if metric.isStats() {
+			// VPP-stats terms: window is OPTIONAL. window=0 reads the latest poll;
+			// window>0 aggregates over the global vpp_stats rings (coverage is
+			// validated at startup against the configured rings, not here). Only
+			// avg/max make sense over already-per-second rates; sum is rejected.
+			window := tc.Window.Duration()
+			if window < 0 {
+				return nil, fmt.Errorf("trigger.terms.%s: window must be >= 0", name)
+			}
+			if window > 0 {
+				offset := tc.Offset.Duration()
+				if offset < 0 {
+					return nil, fmt.Errorf("trigger.terms.%s: offset must be >= 0", name)
+				}
+				if agg == aggSum {
+					return nil, fmt.Errorf("trigger.terms.%s: vpp metrics support agg avg or max, not sum", name)
+				}
+				t.window = window
+				t.offset = offset
+			}
+		} else {
 			window := tc.Window.Duration()
 			if window <= 0 {
 				return nil, fmt.Errorf("trigger.terms.%s: window must be > 0", name)

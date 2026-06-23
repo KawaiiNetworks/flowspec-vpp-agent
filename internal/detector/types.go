@@ -78,12 +78,16 @@ type Rates struct {
 	HWDropPPS float64
 }
 
-// StatsView exposes VPP interface counters as rates. InterfaceRates returns the
-// rates for one interface (ok=false if unknown); TotalRates returns the sum
-// across all interfaces.
+// StatsView exposes VPP interface counters as rates. The *Rates methods return
+// the latest (instant) poll; the *Window methods aggregate over
+// [now-offset-window, now-offset] (peak = per-field max instead of mean). Name
+// "" is never passed to InterfaceWindow — totals use TotalWindow. ok=false means
+// unknown interface or no ring covering the window.
 type StatsView interface {
 	InterfaceRates(name string) (Rates, bool)
 	TotalRates() Rates
+	InterfaceWindow(name string, now time.Time, window, offset time.Duration, peak bool) (Rates, bool)
+	TotalWindow(now time.Time, window, offset time.Duration, peak bool) (Rates, bool)
 }
 
 // descriptor is the instance identity: the aggregated signature of a matched

@@ -351,6 +351,53 @@ rules:
 	}
 }
 
+// A windowed vpp term compiles and records its window/offset for coverage
+// validation; sum aggregation is rejected for rate metrics.
+func TestCompile_VPPWindowTerm(t *testing.T) {
+	cfg := `
+rules:
+  - name: total-spike
+    match: { family: ipv4, proto: udp }
+    aggregate: { src: "/32" }
+    history:
+      fine: { resolution: 1s, duration: 10s }
+      max_instances: 10
+    trigger:
+      terms:
+        recent: { metric: vpp.total.rx_bps, window: 10s }
+        base:   { metric: vpp.total.rx_bps, window: 1m, offset: 1m, agg: max }
+      expr: "recent > 3 * base"
+    flowspec: { action: drop, ttl: 10s, src_prefix: "{{src}}" }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rules[0].StatsWindows()
+	if len(got) != 2 {
+		t.Fatalf("stats windows = %+v, want 2", got)
+	}
+
+	// sum is not a valid aggregation for vpp rate metrics.
+	bad := `
+rules:
+  - name: bad
+    match: { family: ipv4, proto: udp }
+    aggregate: { src: "/32" }
+    history:
+      fine: { resolution: 1s, duration: 10s }
+      max_instances: 10
+    trigger:
+      terms:
+        t: { metric: vpp.total.rx_pps, window: 10s, agg: sum }
+      expr: "t > 1"
+    flowspec: { action: drop, ttl: 10s, src_prefix: "{{src}}" }
+`
+	if _, err := CompileConfig([]byte(bad)); err == nil {
+		t.Fatal("expected error: agg sum on vpp metric")
+	}
+}
+
 // Aggregating proto/ports to "all" widens the emitted FlowSpec to block every
 // protocol and port from the source, while the descriptor identity stays the
 // source host.
@@ -636,4 +683,14 @@ func (f fakeStats) TotalRates() Rates {
 		t.SWDropPPS += v.drop
 	}
 	return t
+}
+
+// The fake ignores the window and returns its instant rates, which is enough for
+// term-plumbing tests; ring aggregation is covered in vppstats.
+func (f fakeStats) InterfaceWindow(name string, _ time.Time, _, _ time.Duration, _ bool) (Rates, bool) {
+	return f.InterfaceRates(name)
+}
+
+func (f fakeStats) TotalWindow(_ time.Time, _, _ time.Duration, _ bool) (Rates, bool) {
+	return f.TotalRates(), true
 }

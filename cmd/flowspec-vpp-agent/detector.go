@@ -11,13 +11,14 @@ import (
 
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/config"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/detector"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/vppstats"
 	builtinrules "github.com/kawaiinetworks/flowspec-vpp-agent/rules"
 )
 
 // compileDetectorRules gathers rule definitions from the embedded predefined set
 // and the optional runtime directory (user rules override built-ins by name),
 // then compiles only the rules named in rules_enabled.
-func compileDetectorRules(cfg config.Detector) ([]*detector.Rule, error) {
+func compileDetectorRules(cfg *config.Detector) ([]*detector.Rule, error) {
 	defs := map[string]detector.RuleConfig{}
 
 	builtin, err := loadEmbeddedRules()
@@ -49,10 +50,10 @@ func compileDetectorRules(cfg config.Detector) ([]*detector.Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile detector rules: %w", err)
 	}
-	// A rule that reads vpp.packet_iface.* metrics is meaningless without the stats
-	// poller: those terms would silently read 0 and the rule would never fire.
-	// Reject the config rather than mislead the operator.
-	if !cfg.VPPStats.Enabled {
+	// A rule that reads vpp.* metrics is meaningless without the stats poller:
+	// those terms would silently read 0 and the rule would never fire. Reject the
+	// config rather than mislead the operator.
+	if !cfg.VPPStatsEnabled() {
 		var offenders []string
 		for _, r := range rules {
 			if r.UsesVPPStats() {
@@ -60,10 +61,34 @@ func compileDetectorRules(cfg config.Detector) ([]*detector.Rule, error) {
 			}
 		}
 		if len(offenders) > 0 {
-			return nil, fmt.Errorf("detector.vpp_stats.enabled is false but these rules use vpp.* metrics: %s", strings.Join(offenders, ", "))
+			return nil, fmt.Errorf("detector.vpp_stats is not configured but these rules use vpp.* metrics: %s", strings.Join(offenders, ", "))
+		}
+		return rules, nil
+	}
+	// vpp.* windowed terms must be covered by the configured rings, else they
+	// would silently read 0. Validate up front against the effective ring sizing.
+	ringCfg := vppRingConfig(cfg.VPPStats)
+	for _, r := range rules {
+		for _, w := range r.StatsWindows() {
+			if !ringCfg.Covers(w.Window, w.Offset) {
+				return nil, fmt.Errorf("rule %q: vpp window %s offset %s is not covered by the vpp_stats rings (adjust window/offset or vpp_stats.fine/medium/coarse)", r.Name(), w.Window, w.Offset)
+			}
 		}
 	}
 	return rules, nil
+}
+
+// vppRingConfig maps the YAML vpp_stats ring sizing to the vppstats ring config.
+// Unset dimensions are filled with defaults by vppstats.
+func vppRingConfig(v *config.VPPStats) vppstats.RingConfig {
+	return vppstats.RingConfig{
+		FineResolution:   v.Fine.Resolution.Duration(),
+		FineDuration:     v.Fine.Duration.Duration(),
+		MediumResolution: v.Medium.Resolution.Duration(),
+		MediumDuration:   v.Medium.Duration.Duration(),
+		CoarseResolution: v.Coarse.Resolution.Duration(),
+		CoarseDuration:   v.Coarse.Duration.Duration(),
+	}
 }
 
 func loadEmbeddedRules() (map[string]detector.RuleConfig, error) {
@@ -130,7 +155,7 @@ func mergeRules(dst map[string]detector.RuleConfig, data []byte, source string) 
 	return nil
 }
 
-func logDetectorConfig(logger *slog.Logger, cfg config.Detector, rules int) {
+func logDetectorConfig(logger *slog.Logger, cfg *config.Detector, rules int) {
 	logger.Info("detector enabled",
 		"rules", rules,
 		"rules_enabled", cfg.RulesEnabled,
@@ -139,7 +164,7 @@ func logDetectorConfig(logger *slog.Logger, cfg config.Detector, rules int) {
 		"sflow_listen", cfg.SFlow.Listen,
 		"sample_queue", cfg.SampleQueue,
 		"event_queue", cfg.EventQueue,
-		"vpp_stats", cfg.VPPStats.Enabled,
+		"vpp_stats", cfg.VPPStatsEnabled(),
 	)
 }
 

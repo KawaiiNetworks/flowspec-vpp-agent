@@ -126,17 +126,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		logger.Info("BGP disabled (no peers configured)")
 	}
 
-	if cfg.Detector.Enabled {
-		rules, err := compileDetectorRules(cfg.Detector)
+	if cfg.DetectorEnabled() {
+		det := cfg.Detector
+		rules, err := compileDetectorRules(det)
 		if err != nil {
 			return err
 		}
-		logDetectorConfig(logger, cfg.Detector, len(rules))
+		logDetectorConfig(logger, det, len(rules))
 
-		samples := make(chan detector.Sample, cfg.Detector.SampleQueue)
-		events := make(chan detector.Event, cfg.Detector.EventQueue)
+		samples := make(chan detector.Sample, det.SampleQueue)
+		events := make(chan detector.Event, det.EventQueue)
 
-		collector := sflow.NewCollector(cfg.Detector.SFlow.Listen, samples, logger)
+		collector := sflow.NewCollector(det.SFlow.Listen, samples, logger)
 		if err := collector.Listen(); err != nil {
 			return fmt.Errorf("listen sFlow: %w", err)
 		}
@@ -154,13 +155,13 @@ func run(cfg config.Config, logger *slog.Logger) error {
 			"human", humanBytes(engine.MemoryEstimate()),
 			"note", "upper bound at full max_instances")
 		var statsView detector.StatsView
-		if cfg.Detector.VPPStats.Enabled {
-			store := vppstats.NewStore(vppstats.DefaultRingConfig())
+		if det.VPPStatsEnabled() {
+			store := vppstats.NewStore(vppRingConfig(det.VPPStats))
 			statsView = store
 			status.setStats(store)
 			poller := vppstats.NewPoller(vppstats.Options{
 				Socket:   cfg.VPP.StatsSocket,
-				Interval: cfg.Detector.VPPStats.Interval.Duration(),
+				Interval: det.VPPStats.Interval.Duration(),
 			}, store, logger)
 			go poller.Run(ctx)
 		}
@@ -168,7 +169,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		status.setRunner(runner)
 		go runner.Run(ctx)
 		ctrl := localrules.New(updates, logger)
-		ctrl.SetDryRun(cfg.Detector.DryRun)
+		ctrl.SetDryRun(det.DryRun)
 		// Originate detector leases upstream when any peer is configured to receive
 		// our FlowSpec (the BGP export policy restricts delivery to those peers).
 		if bgpSrv != nil && hasSendPeer(cfg.BGP) {

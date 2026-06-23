@@ -40,7 +40,7 @@ func TestSplitListen_IPv6(t *testing.T) {
 }
 
 func TestCompileLocalRulesBuiltin(t *testing.T) {
-	rules, err := compileDetectorRules(config.Detector{RulesEnabled: []string{"udp-flood-ipv4"}})
+	rules, err := compileDetectorRules(&config.Detector{RulesEnabled: []string{"udp-flood-ipv4"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestAllBuiltinRulesCompile(t *testing.T) {
 	for name := range defs {
 		names = append(names, name)
 	}
-	rules, err := compileDetectorRules(config.Detector{RulesEnabled: names})
+	rules, err := compileDetectorRules(&config.Detector{RulesEnabled: names})
 	if err != nil {
 		t.Fatalf("compiling all %d built-in rules: %v", len(names), err)
 	}
@@ -95,7 +95,7 @@ rules:
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rules, err := compileDetectorRules(config.Detector{RulesDir: dir, RulesEnabled: []string{"file-rule"}})
+	rules, err := compileDetectorRules(&config.Detector{RulesDir: dir, RulesEnabled: []string{"file-rule"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ rules:
 }
 
 func TestCompileLocalRulesUnknown(t *testing.T) {
-	if _, err := compileDetectorRules(config.Detector{RulesEnabled: []string{"does-not-exist"}}); err == nil {
+	if _, err := compileDetectorRules(&config.Detector{RulesEnabled: []string{"does-not-exist"}}); err == nil {
 		t.Fatal("expected error for unknown rule name")
 	}
 }
@@ -138,7 +138,7 @@ rules:
 	}
 
 	// Disabled stats -> error naming the offending rule.
-	_, err := compileDetectorRules(config.Detector{RulesDir: dir, RulesEnabled: []string{"vpp-rule"}})
+	_, err := compileDetectorRules(&config.Detector{RulesDir: dir, RulesEnabled: []string{"vpp-rule"}})
 	if err == nil {
 		t.Fatal("expected error: vpp.* metric with vpp_stats disabled")
 	}
@@ -147,14 +147,54 @@ rules:
 	}
 
 	// Enabled stats -> compiles.
-	rules, err := compileDetectorRules(config.Detector{
+	rules, err := compileDetectorRules(&config.Detector{
 		RulesDir: dir, RulesEnabled: []string{"vpp-rule"},
-		VPPStats: config.LocalStats{Enabled: true},
+		VPPStats: &config.VPPStats{},
 	})
 	if err != nil {
 		t.Fatalf("vpp-rule with stats enabled: %v", err)
 	}
 	if len(rules) != 1 || !rules[0].UsesVPPStats() {
 		t.Fatalf("rules = %+v", rules)
+	}
+}
+
+// A windowed vpp term must be covered by the configured rings.
+func TestCompileDetectorRules_VPPWindowCoverage(t *testing.T) {
+	dir := t.TempDir()
+	write := func(window string) {
+		if err := os.WriteFile(filepath.Join(dir, "rules.yaml"), []byte(`
+rules:
+  - name: win-rule
+    match: { family: ipv4, proto: udp }
+    aggregate: { src: "/32" }
+    history:
+      fine: { resolution: 1s, duration: 10s }
+      max_instances: 2
+    trigger:
+      terms:
+        rx: { metric: vpp.total.rx_pps, window: `+window+` }
+      expr: "rx > 1"
+    flowspec: { action: drop, ttl: 10s, src_prefix: "{{src}}" }
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 10s is covered by the default fine ring (1s/5m).
+	write("10s")
+	if _, err := compileDetectorRules(&config.Detector{
+		RulesDir: dir, RulesEnabled: []string{"win-rule"}, VPPStats: &config.VPPStats{},
+	}); err != nil {
+		t.Fatalf("10s window should be covered: %v", err)
+	}
+
+	// 90 days exceeds every default ring span.
+	write("2160h")
+	_, err := compileDetectorRules(&config.Detector{
+		RulesDir: dir, RulesEnabled: []string{"win-rule"}, VPPStats: &config.VPPStats{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "win-rule") {
+		t.Fatalf("expected coverage error naming the rule, got: %v", err)
 	}
 }

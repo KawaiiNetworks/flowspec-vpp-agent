@@ -29,7 +29,7 @@ vpp:
 | Field          | Type   | Default                 | Description |
 | -------------- | ------ | ----------------------- | ----------- |
 | `socket`       | string | `/run/vpp/api.sock`     | VPP **binary API** unix socket. The agent uses it to issue `acl_add_replace`, enumerate interfaces and attach ACLs. **Required** (must be non-empty). |
-| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket path. Used by `detector.vpp_stats` when the detector is enabled. |
+| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket path. Used when a `detector.vpp_stats` block is present. |
 
 > Socket access from a container: `/run/vpp` is usually owned by root (or the vpp
 > group); `user: "0:0"` in compose is the simplest. The agent retries with backoff
@@ -161,9 +161,12 @@ Optional sFlow/VPP-stats detector. It listens for sFlow v5 datagrams,
 updates fixed-capacity rule state, emits synthetic FlowSpec rules into the same
 manager path as BGP, refreshes active leases, and withdraws them when TTL expires.
 
+**The detector is enabled by the presence of a `detector:` section** — there is
+no `enabled` flag. Likewise `vpp_stats` is enabled by the presence of a
+`vpp_stats:` block. Omit the section to disable.
+
 ```yaml
 detector:
-  enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
     - dns-reflection
@@ -174,22 +177,24 @@ detector:
     listen: "0.0.0.0:6343"
   sample_queue: 65536
   event_queue: 1024
-  vpp_stats:
-    enabled: true
+  vpp_stats:       # presence enables counter polling; omit to disable
     interval: 1s
+    fine:   { resolution: 1s, duration: 5m }
+    medium: { resolution: 1m, duration: 1d }
+    coarse: { resolution: 1h, duration: 30d }
 ```
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enables the detector. |
 | `dry_run` | bool | `false` | Log each triggered event's description and take no action (no ACLs programmed). |
 | `rules_dir` | string | empty | Optional directory of user rule files (`*.yaml`). Files override built-in rules of the same name. |
-| `rules_enabled` | list | empty | Rule names to activate. Required when enabled. Names resolve against the embedded predefined rules plus `rules_dir`. |
+| `rules_enabled` | list | empty | Rule names to activate. **Required** (non-empty). Names resolve against the embedded predefined rules plus `rules_dir`. |
 | `sflow.listen` | string | `0.0.0.0:6343` | UDP listen address for sFlow v5 datagrams. |
-| `sample_queue` | int | `65536` | Bounded sample queue. Full queues drop sampled packets instead of growing memory. |
-| `event_queue` | int | `1024` | Bounded detector-event queue. |
-| `vpp_stats.enabled` | bool | `true` | Poll VPP interface counters into fixed rings. |
-| `vpp_stats.interval` | duration | `1s` | VPP stats polling interval. |
+| `sample_queue` | int | `65536` | Bounded sample queue (`0` → default). Full queues drop sampled packets instead of growing memory. |
+| `event_queue` | int | `1024` | Bounded detector-event queue (`0` → default). |
+| `vpp_stats` | block | absent | Present → poll VPP interface counters (enables `vpp.*` metrics). Omitted → no polling, and rules using `vpp.*` are rejected at startup. |
+| `vpp_stats.interval` | duration | `1s` | VPP stats polling interval (`0`/omitted → `1s`). |
+| `vpp_stats.fine` / `medium` / `coarse` | ring | `1s/5m`, `1m/1d`, `1h/30d` | History rings (same model as a rule's `history`). Each has `resolution` and `duration` (a `0` field uses the default). Windowed `vpp.*` terms aggregate over the coarsest ring that covers their window; a window no ring can cover is rejected at startup. |
 
 ### Rule files
 
@@ -303,10 +308,12 @@ over them; `sustained` debounces. A term has:
 
 - `metric`: one of
   - `pps` (default) / `bps` — sampled flow rate from this rule's history rings.
-  - A VPP stats metric (read from the stats poller, see below). These need no
-    `window` (they read the latest poll, not a window), and a rule using any of
-    them requires `detector.vpp_stats.enabled: true` — otherwise the agent
-    **refuses to start** rather than let the term silently read 0.
+  - A VPP stats metric (read from the stats poller, see below). A rule using any
+    of them requires a `vpp_stats:` block under the detector — otherwise the agent
+    **refuses to start** rather than let the term silently read 0. `window` is
+    optional: omit it to read the latest poll (instant); set it to aggregate over
+    the `vpp_stats` rings (with `offset` and `agg: avg|max`, default `avg` — `sum`
+    is rejected for these rate metrics).
 
   VPP stats metrics come in two scopes:
   - `vpp.packet_iface.<field>` — the interface the instance's packets entered on
@@ -325,7 +332,7 @@ over them; `sustained` debounces. A term has:
   So e.g. `vpp.total.rx_bps` is the box-wide inbound bit rate, and
   `vpp.packet_iface.hw_drop_pps` is NIC-level loss on the attacked interface.
   There is **no** `drop_bps`: VPP's drop counters are packets-only.
-- `window`: the span aggregated (required for `pps`/`bps`; ignored for `vpp.*`).
+- `window`: the span aggregated (required for `pps`/`bps`; optional for `vpp.*`, where omitting it reads the latest poll).
 - `offset` (optional): how far back the window *ends* — `{window: 10m, offset: 1m}`
   covers `[now−11m, now−1m]`. Use it to build a baseline that excludes the recent
   spike.

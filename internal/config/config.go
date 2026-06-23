@@ -14,12 +14,12 @@ import (
 
 // Config is the top-level agent configuration.
 type Config struct {
-	VPP      VPP      `yaml:"vpp"`
-	BGP      BGP      `yaml:"bgp"`
-	ACL      ACL      `yaml:"acl"`
-	Metrics  Metrics  `yaml:"metrics"`
-	Detector Detector `yaml:"detector"`
-	Log      Log      `yaml:"log"`
+	VPP      VPP       `yaml:"vpp"`
+	BGP      BGP       `yaml:"bgp"`
+	ACL      ACL       `yaml:"acl"`
+	Metrics  Metrics   `yaml:"metrics"`
+	Detector *Detector `yaml:"detector"` // present => detector enabled
+	Log      Log       `yaml:"log"`
 }
 
 // VPP holds VPP connection settings. Both sockets live under /run/vpp (§19).
@@ -79,28 +79,49 @@ type Metrics struct {
 	Listen string `yaml:"listen"` // host:port for /metrics and /healthz; empty disables HTTP
 }
 
-// Detector controls the optional sFlow/VPP-stats driven detector. Rules are
+// Detector controls the optional sFlow/VPP-stats driven detector. Its mere
+// presence in the config enables it — there is no `enabled` flag. Rules are
 // loaded from the embedded predefined set plus an optional runtime directory;
 // RulesEnabled selects which (by name) are activated.
 type Detector struct {
-	Enabled      bool       `yaml:"enabled"`
-	DryRun       bool       `yaml:"dry_run"`       // log triggered events; take no action
-	RulesDir     string     `yaml:"rules_dir"`     // optional dir of user rule files (*.yaml)
-	RulesEnabled []string   `yaml:"rules_enabled"` // rule names to activate
-	SFlow        SFlow      `yaml:"sflow"`
-	VPPStats     LocalStats `yaml:"vpp_stats"`
-	SampleQueue  int        `yaml:"sample_queue"`
-	EventQueue   int        `yaml:"event_queue"`
+	DryRun       bool      `yaml:"dry_run"`       // log triggered events; take no action
+	RulesDir     string    `yaml:"rules_dir"`     // optional dir of user rule files (*.yaml)
+	RulesEnabled []string  `yaml:"rules_enabled"` // rule names to activate
+	SFlow        SFlow     `yaml:"sflow"`
+	VPPStats     *VPPStats `yaml:"vpp_stats"` // present => poll VPP interface counters
+	SampleQueue  int       `yaml:"sample_queue"`
+	EventQueue   int       `yaml:"event_queue"`
 }
 
 type SFlow struct {
 	Listen string `yaml:"listen"`
 }
 
-type LocalStats struct {
-	Enabled  bool     `yaml:"enabled"`
+// VPPStats controls VPP interface-counter polling. Its presence enables polling
+// (so detector rules can use vpp.* metrics); there is no `enabled` flag. The
+// fine/medium/coarse rings use the same model as a rule's history, so vpp.*
+// terms can aggregate over a window/offset; omitted rings fall back to defaults.
+type VPPStats struct {
 	Interval Duration `yaml:"interval"`
+	Fine     Ring     `yaml:"fine"`
+	Medium   Ring     `yaml:"medium"`
+	Coarse   Ring     `yaml:"coarse"`
 }
+
+// Ring is one history ring's resolution and total retained duration. A zero
+// field means "use the built-in default".
+type Ring struct {
+	Resolution Duration `yaml:"resolution"`
+	Duration   Duration `yaml:"duration"`
+}
+
+// DetectorEnabled reports whether the detector should run. It is enabled exactly
+// when a `detector:` section is present.
+func (c Config) DetectorEnabled() bool { return c.Detector != nil }
+
+// VPPStatsEnabled reports whether VPP interface-counter polling is on, i.e. a
+// `vpp_stats:` block is present under the detector.
+func (d *Detector) VPPStatsEnabled() bool { return d != nil && d.VPPStats != nil }
 
 // Log controls logging.
 type Log struct {
@@ -108,7 +129,9 @@ type Log struct {
 	Format string `yaml:"format"` // text|json
 }
 
-// Default values applied before unmarshalling (§19.2).
+// Default values applied before unmarshalling (§19.2). The detector is left nil
+// (absent => disabled); its sub-defaults are filled by applyDetectorDefaults
+// only when a detector section is present.
 func defaults() Config {
 	return Config{
 		VPP: VPP{
@@ -125,15 +148,26 @@ func defaults() Config {
 			},
 		},
 		Log: Log{Level: "info", Format: "text"},
-		Detector: Detector{
-			SFlow:       SFlow{Listen: "0.0.0.0:6343"},
-			SampleQueue: 65536,
-			EventQueue:  1024,
-			VPPStats: LocalStats{
-				Enabled:  true,
-				Interval: Duration(1000000000),
-			},
-		},
+	}
+}
+
+// applyDetectorDefaults fills detector sub-defaults when a detector section is
+// present. Absent sections stay nil (disabled).
+func (c *Config) applyDetectorDefaults() {
+	if c.Detector == nil {
+		return
+	}
+	if c.Detector.SFlow.Listen == "" {
+		c.Detector.SFlow.Listen = "0.0.0.0:6343"
+	}
+	if c.Detector.SampleQueue == 0 {
+		c.Detector.SampleQueue = 65536
+	}
+	if c.Detector.EventQueue == 0 {
+		c.Detector.EventQueue = 1024
+	}
+	if c.Detector.VPPStats != nil && c.Detector.VPPStats.Interval.Duration() <= 0 {
+		c.Detector.VPPStats.Interval = Duration(1000000000) // 1s
 	}
 }
 
@@ -152,6 +186,7 @@ func Parse(data []byte) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.applyDetectorDefaults()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -191,8 +226,8 @@ func (c Config) Validate() error {
 			}
 		}
 	}
-	if !c.BGPEnabled() && !c.Detector.Enabled {
-		return fmt.Errorf("nothing to do: configure bgp.peers or enable the detector")
+	if !c.BGPEnabled() && !c.DetectorEnabled() {
+		return fmt.Errorf("nothing to do: configure bgp.peers or add a detector section")
 	}
 	switch c.ACL.Interfaces.Mode {
 	case "all":
@@ -213,7 +248,7 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
-	if c.Detector.Enabled {
+	if c.DetectorEnabled() {
 		if len(c.Detector.RulesEnabled) == 0 {
 			return fmt.Errorf("detector requires a non-empty rules_enabled list")
 		}
@@ -229,7 +264,7 @@ func (c Config) Validate() error {
 		if c.Detector.EventQueue <= 0 {
 			return fmt.Errorf("detector.event_queue must be > 0")
 		}
-		if c.Detector.VPPStats.Enabled && c.Detector.VPPStats.Interval.Duration() <= 0 {
+		if c.Detector.VPPStatsEnabled() && c.Detector.VPPStats.Interval.Duration() <= 0 {
 			return fmt.Errorf("detector.vpp_stats.interval must be > 0")
 		}
 	}
