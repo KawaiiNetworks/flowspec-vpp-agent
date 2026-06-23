@@ -26,7 +26,7 @@ vpp:
 | 字段           | 类型   | 默认值                  | 说明 |
 | -------------- | ------ | ----------------------- | ---- |
 | `socket`       | string | `/run/vpp/api.sock`     | VPP **binary API** unix socket 路径。agent 通过它下发 `acl_add_replace`、枚举接口、挂载 ACL。**必填**（不能为空）。 |
-| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket 路径。启用 `local_detector.vpp_stats` 时用于读取接口计数器。 |
+| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket 路径。启用 `detector.vpp_stats` 时用于读取接口计数器。 |
 
 > 容器里访问 socket：`/run/vpp` 通常 root（或 vpp 组）持有，compose 用 `user: "0:0"` 最省事；socket 未就绪或 VPP 重启时 agent 会退避重连，不会启动即崩。
 
@@ -62,22 +62,37 @@ bgp:
 | `peer_asn` | uint32 | —      | 邻居 AS 号。**必填且不能为 0**。 |
 | `port`     | uint16 | `0`    | 邻居 TCP 传输端口；`0` 表示用默认。FlowSpec 采集器（如 FastNetMon）通常主动连入，一般无需设置。 |
 | `passive`  | bool   | `false`| 被动模式（只监听、不主动发起）。FlowSpec 采集场景常设为 `true`。 |
+| `receive`  | bool   | `true` | 接收该 peer 的 FlowSpec：应用到 VPP，并转发给 `send` peer。对只向其发布的上游可设为 `false`。 |
+| `send`     | bool   | `false`| 向该 peer 发布我们的整张 FlowSpec 表（包括从 `receive` peer 收到的规则和检测器产生的 drop）。 |
 
+每个 peer 必须至少有 `receive` 或 `send`；`receive: false` 且 `send: false` 会被拒绝。
 每个会话在协商时同时启用 IPv4 与 IPv6 FlowSpec 地址族。
+
+**方向由 GoBGP 策略强制实施。** 导出策略（默认 reject）只允许把我们产生/转发的
+FlowSpec 发给 `send` peer——因此非 send peer 即使协商了该地址族也收不到我们的路由；
+导入策略（默认 reject）使非 `receive` peer 的路由不进入本地 RIB，从而不会被转发；
+入向是否应用到 VPP 则按 peer 单独控制。
+
+本 agent 只会**originate** 纯 drop（`traffic-rate 0`）；转发的路由按收到的原样发出。
 
 ---
 
-## interfaces
+## acl
 
-Managed ACL 挂到哪些接口、什么方向（本地策略，FlowSpec 报文不携带接口信息）。
+Managed ACL 如何应用到数据面（本地策略，FlowSpec 报文不携带接口信息）。
 
 ```yaml
-interfaces:
-  mode: all
-  direction: ingress
-  # list:
-  #   - GigabitEthernet0/0/0
+acl:
+  interfaces:
+    mode: all
+    direction: ingress
+    # list:
+    #   - GigabitEthernet0/0/0
 ```
+
+### acl.interfaces
+
+Managed ACL 挂到哪些接口、什么方向。
 
 | 字段        | 类型   | 默认值     | 说明 |
 | ----------- | ------ | ---------- | ---- |
@@ -98,7 +113,7 @@ metrics:
 
 | 字段     | 类型   | 默认值 | 说明 |
 | -------- | ------ | ------ | ---- |
-| `listen` | string | 空字符串 | 空值表示不启动 HTTP 监听。设置为合法 `host:port`（如 `127.0.0.1:9469` 或 `0.0.0.0:9469`）后才暴露 `/metrics` 和 `/healthz`；`healthcheck` 子命令会请求本机该端口的 `/healthz`。 |
+| `listen` | string | 空字符串 | 空值表示不启动 HTTP 监听。设置为合法 `host:port`（如 `127.0.0.1:9469` 或 `0.0.0.0:9469`）后才暴露 `/metrics`、`/healthz` 和 `/status`；`healthcheck` 子命令会请求本机该端口的 `/healthz`。 |
 
 暴露的指标：
 
@@ -106,16 +121,26 @@ metrics:
 - `flowspec_rules_applied_total{family,peer}` —— 成功下发的规则数。
 - `flowspec_acl_entries{family}` —— 当前每个 Managed ACL 的 entry 数量（gauge）。
 
+### `/status`（JSON）
+
+同一监听端口上的 `GET /status` 返回检测器实时状态的 JSON 快照（检测器未启用时各段为空）：
+
+- `traffic` —— VPP stats 轮询得到的每接口最新速率（`rx_pps` / `tx_pps` / `drop_pps`）。
+- `rules` —— 每条检测规则及其占用（`instance_count` / `max_instances`）与当前实例。每个实例携带其描述符（family、proto、src/dst、端口）、来自 fine ring 的当前 `pps` / `bps`、求值后的触发项 `terms`，以及 `firing`（触发表达式当前是否成立）。
+- `active` —— 当前通过 manager 下发的 synthetic FlowSpec 租约，含 `flowspec` 标识、`family` 与 `expires_at`。
+
+`rules` 与 `active` 每个检测 tick 刷新一次，`traffic` 为最近一次轮询。该端点只读且无鉴权 —— 请将 `listen` 绑定到可信地址。
+
 ---
 
-## local_detector
+## detector
 
-可选的本机 sFlow/VPP-stats 检测器。它监听 sFlow v5 UDP 数据包，维护固定容量规则状态，
+可选的 sFlow/VPP-stats 检测器。它监听 sFlow v5 UDP 数据包，维护固定容量规则状态，
 把命中的事件转换成 synthetic FlowSpec 规则走同一条 manager/VPP ACL 路径，并负责 TTL
 刷新与到期撤销。
 
 ```yaml
-local_detector:
+detector:
   enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:

@@ -281,8 +281,8 @@ func (r *Rule) buildFlowSpec(d descriptor) (flowspec.Rule, error) {
 	return flowspec.Rule{
 		Family: fam,
 		Match:  m,
-		Action: flowspec.Action{Kind: flowspec.ActionDrop, Desc: "local-detector:" + r.name},
-		Raw:    "local-detector:" + r.name + ":" + r.descriptorString(d),
+		Action: flowspec.Action{Kind: flowspec.ActionDrop, Desc: "detector:" + r.name},
+		Raw:    "detector:" + r.name + ":" + r.descriptorString(d),
 	}, nil
 }
 

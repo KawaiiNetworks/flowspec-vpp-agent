@@ -1,7 +1,7 @@
-// Package builtinrules embeds the agent's predefined local-detector rule files.
+// Package builtinrules embeds the agent's predefined detector rule files.
 // Every *.yaml in this directory is compiled into the binary and made available
-// by name; an operator enables specific rules via local_detector.rules_enabled
-// and may override or add rules at runtime through local_detector.rules_dir.
+// by name; an operator enables specific rules via detector.rules_enabled
+// and may override or add rules at runtime through detector.rules_dir.
 package builtinrules
 
 import "embed"

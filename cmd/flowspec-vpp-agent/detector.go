@@ -14,10 +14,10 @@ import (
 	builtinrules "github.com/kawaiinetworks/flowspec-vpp-agent/rules"
 )
 
-// compileLocalRules gathers rule definitions from the embedded predefined set and
-// the optional runtime directory (user rules override built-ins by name), then
-// compiles only the rules named in rules_enabled.
-func compileLocalRules(cfg config.Local) ([]*detector.Rule, error) {
+// compileDetectorRules gathers rule definitions from the embedded predefined set
+// and the optional runtime directory (user rules override built-ins by name),
+// then compiles only the rules named in rules_enabled.
+func compileDetectorRules(cfg config.Detector) ([]*detector.Rule, error) {
 	defs := map[string]detector.RuleConfig{}
 
 	builtin, err := loadEmbeddedRules()
@@ -41,13 +41,13 @@ func compileLocalRules(cfg config.Local) ([]*detector.Rule, error) {
 	for _, name := range cfg.RulesEnabled {
 		rc, ok := defs[name]
 		if !ok {
-			return nil, fmt.Errorf("local_detector.rules_enabled: rule %q not found in built-in set or rules_dir", name)
+			return nil, fmt.Errorf("detector.rules_enabled: rule %q not found in built-in set or rules_dir", name)
 		}
 		selected = append(selected, rc)
 	}
 	rules, err := detector.CompileRules(selected)
 	if err != nil {
-		return nil, fmt.Errorf("compile local detector rules: %w", err)
+		return nil, fmt.Errorf("compile detector rules: %w", err)
 	}
 	return rules, nil
 }
@@ -77,7 +77,7 @@ func loadDirRules(dir string) (map[string]detector.RuleConfig, error) {
 	out := map[string]detector.RuleConfig{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read local_detector.rules_dir %q: %w", dir, err)
+		return nil, fmt.Errorf("read detector.rules_dir %q: %w", dir, err)
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -116,8 +116,8 @@ func mergeRules(dst map[string]detector.RuleConfig, data []byte, source string) 
 	return nil
 }
 
-func logLocalDetectorConfig(logger *slog.Logger, cfg config.Local, rules int) {
-	logger.Info("local detector enabled",
+func logDetectorConfig(logger *slog.Logger, cfg config.Detector, rules int) {
+	logger.Info("detector enabled",
 		"rules", rules,
 		"rules_enabled", cfg.RulesEnabled,
 		"rules_dir", cfg.RulesDir,

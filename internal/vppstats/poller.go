@@ -83,8 +83,8 @@ func (p *Poller) runConnected(ctx context.Context) bool {
 }
 
 func (p *Poller) addRates(now time.Time, prev, cur map[string]counters) {
-	for name, c := range cur {
-		old, ok := prev[name]
+	for idx, c := range cur {
+		old, ok := prev[idx]
 		if !ok || !c.at.After(old.at) {
 			continue
 		}
@@ -92,9 +92,17 @@ func (p *Poller) addRates(now time.Time, prev, cur map[string]counters) {
 		if seconds <= 0 {
 			continue
 		}
+		// Store one ring per interface: keyed by its name when it has one (with the
+		// ifindex as a lookup alias), or by the ifindex when it is unnamed. sFlow
+		// reports ingress as "ifindex:N", so the alias keeps detector lookups working.
+		name, aliases := c.ifindex, []string(nil)
+		if c.name != "" {
+			name, aliases = c.name, []string{c.ifindex}
+		}
 		p.store.Add(Sample{
 			At:      now,
 			Name:    name,
+			Aliases: aliases,
 			RXPPS:   deltaRate(old.rxPackets, c.rxPackets, seconds),
 			TXPPS:   deltaRate(old.txPackets, c.txPackets, seconds),
 			DropPPS: deltaRate(old.drops, c.drops, seconds),
@@ -104,24 +112,27 @@ func (p *Poller) addRates(now time.Time, prev, cur map[string]counters) {
 
 type counters struct {
 	at        time.Time
+	name      string
+	ifindex   string
 	rxPackets uint64
 	txPackets uint64
 	drops     uint64
 }
 
 func snapshot(now time.Time, stats api.InterfaceStats) map[string]counters {
+	// Keyed by ifindex (always present) so prev/cur deltas match by stable identity
+	// even for unnamed interfaces.
 	out := make(map[string]counters, len(stats.Interfaces))
 	for _, iface := range stats.Interfaces {
-		c := counters{
+		idx := stringIndex(iface.InterfaceIndex)
+		out[idx] = counters{
 			at:        now,
+			name:      iface.InterfaceName,
+			ifindex:   idx,
 			rxPackets: iface.Rx.Packets,
 			txPackets: iface.Tx.Packets,
 			drops:     iface.Drops,
 		}
-		if iface.InterfaceName != "" {
-			out[iface.InterfaceName] = c
-		}
-		out[stringIndex(iface.InterfaceIndex)] = c
 	}
 	return out
 }

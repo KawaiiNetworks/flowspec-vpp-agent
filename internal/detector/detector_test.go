@@ -104,6 +104,82 @@ func TestEngine_UDPFloodTriggers(t *testing.T) {
 	}
 }
 
+func TestSlotIndex_NegativeEpoch(t *testing.T) {
+	cases := []struct {
+		epoch int64
+		n     int
+		want  int
+	}{
+		{5, 10, 5},
+		{-1, 10, 9},
+		{-10, 10, 0},
+		{-11, 10, 9},
+	}
+	for _, c := range cases {
+		if got := slotIndex(c.epoch, c.n); got != c.want {
+			t.Fatalf("slotIndex(%d, %d) = %d, want %d", c.epoch, c.n, got, c.want)
+		}
+	}
+	// A pre-Unix-epoch timestamp must not panic the ring.
+	r := newSampleRing(10, time.Second)
+	r.add(time.Unix(-5, 0), 100, 1)
+}
+
+func TestEngine_Snapshot(t *testing.T) {
+	rules, err := CompileConfig([]byte(udpFloodYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	start := time.Unix(1000, 0)
+	var last time.Time
+	for sec := 0; sec < 20; sec++ {
+		at := start.Add(time.Duration(sec) * time.Second)
+		last = at
+		for n := 0; n < 101; n++ {
+			engine.Observe(Sample{
+				At:         at,
+				Family:     flowspec.FamilyIPv4,
+				Src:        netip.MustParseAddr("198.51.100.9"),
+				Dst:        netip.MustParseAddr("203.0.113.10"),
+				Proto:      protoUDP,
+				PacketLen:  80,
+				IngressIf:  "GigabitEthernet0/0/0",
+				SampleRate: 1000,
+			})
+		}
+	}
+	// Tick first so the instance's firing state (trueSince) is populated.
+	engine.Tick(last, EvalContext{})
+	snap := engine.Snapshot(last, EvalContext{})
+	if len(snap.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(snap.Rules))
+	}
+	rs := snap.Rules[0]
+	if rs.Name != "udp-small-src-flood" || rs.MaxInstances != 100 {
+		t.Fatalf("rule snapshot = %+v", rs)
+	}
+	if rs.InstanceCount != 1 || len(rs.Instances) != 1 {
+		t.Fatalf("instances = %d/%d, want 1", rs.InstanceCount, len(rs.Instances))
+	}
+	in := rs.Instances[0]
+	if in.Src != "198.51.100.9/32" || in.Proto != "17" {
+		t.Fatalf("instance descriptor = %+v", in)
+	}
+	if in.IngressIf != "GigabitEthernet0/0/0" {
+		t.Fatalf("ingress_if = %q", in.IngressIf)
+	}
+	if !in.Firing {
+		t.Fatalf("instance should be firing")
+	}
+	if in.PPS <= 100000 {
+		t.Fatalf("pps = %f, want >100000", in.PPS)
+	}
+	if v, ok := in.Terms["short"]; !ok || v <= 100000 {
+		t.Fatalf("term short = %v (ok=%v), want >100000", v, ok)
+	}
+}
+
 // Two source IPs in the same /24 collapse to one instance and emit the /24.
 func TestEngine_AggregateCollapsesInstances(t *testing.T) {
 	cfg := `

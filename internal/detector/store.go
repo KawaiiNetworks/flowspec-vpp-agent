@@ -8,6 +8,17 @@ type slot struct {
 	bytes   uint64
 }
 
+// slotIndex maps an epoch onto a ring slot. Go's % keeps the sign of the
+// dividend, so a negative epoch (a timestamp before the Unix epoch) would yield
+// a negative index and panic; this folds it back into [0, n).
+func slotIndex(epoch int64, n int) int {
+	idx := epoch % int64(n)
+	if idx < 0 {
+		idx += int64(n)
+	}
+	return int(idx)
+}
+
 type instance struct {
 	key           descriptor
 	fine          *sampleRing
@@ -86,7 +97,7 @@ func (r *sampleRing) epoch(at time.Time) int64 {
 
 func (r *sampleRing) add(at time.Time, packetLen uint16, weight uint64) {
 	epoch := r.epoch(at)
-	idx := int(epoch % int64(len(r.slots)))
+	idx := slotIndex(epoch, len(r.slots))
 	if r.slots[idx].epoch != epoch {
 		r.slots[idx] = slot{epoch: epoch}
 	}
@@ -104,7 +115,7 @@ func (r *sampleRing) aggregate(now time.Time, t *term) float64 {
 	startEpoch := endEpoch - int64(t.slots) + 1
 	var packets, bytes, maxPackets, maxBytes uint64
 	for epoch := startEpoch; epoch <= endEpoch; epoch++ {
-		idx := int(epoch % int64(len(r.slots)))
+		idx := slotIndex(epoch, len(r.slots))
 		if r.slots[idx].epoch != epoch {
 			continue
 		}
@@ -161,7 +172,7 @@ func (r *sampleRing) rate(now time.Time, slots int, metric metricKind) float64 {
 	var packets, bytes uint64
 	for n := 0; n < slots; n++ {
 		epoch := nowEpoch - int64(n)
-		idx := int(epoch % int64(len(r.slots)))
+		idx := slotIndex(epoch, len(r.slots))
 		if r.slots[idx].epoch != epoch {
 			continue
 		}

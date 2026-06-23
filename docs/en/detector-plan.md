@@ -1,6 +1,6 @@
-# Local Detector Plan
+# Detector Plan
 
-The local detector is the second half of the agent: it consumes sampled packet
+The detector is the second half of the agent: it consumes sampled packet
 metadata and VPP counters, maintains bounded state, and emits synthetic
 FlowSpec-style drop rules that can be fed into the existing manager.
 
@@ -91,7 +91,7 @@ identity), and the fixed `window/consecutive/op/value` trigger became named
 5. Add sFlow collector and VPP stats reader. Done for sFlow v5 raw packet
    headers and VPP interface counters.
 6. Add lease controller to announce/refresh/withdraw local rules through the
-   existing manager. Done using the `local-detector` synthetic session.
+   existing manager. Done using the `detector` synthetic session.
 7. Load rules from embedded predefined files plus a runtime directory, selected
    by `rules_enabled`. Done.
 8. Expression triggers over named windowed terms via `expr-lang/expr`. Done.

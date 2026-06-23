@@ -10,31 +10,41 @@ bgp:
   listen: "0.0.0.0:10179"
   router_id: "192.0.2.1"
   asn: 65000
-  # Multiple peers = multiple FlowSpec sessions (§17). Each peer's rules are
-  # reference-counted into the shared Managed ACLs.
+  # Multiple peers = multiple FlowSpec sessions (§17). Each peer has a direction:
+  #   receive (default true): accept its FlowSpec, apply to VPP, and relay it to
+  #                           send peers.
+  #   send    (default false): advertise our whole FlowSpec table (received rules
+  #                            plus detector-originated drops) to this peer.
+  # A peer may be both. receive=false + send=false is rejected (nothing to do).
   peers:
-    - address: "198.51.100.1"   # e.g. a FastNetMon FlowSpec exporter
+    - address: "198.51.100.1"   # downstream FlowSpec exporter (e.g. FastNetMon)
       peer_asn: 65001
       passive: true             # listen-only is typical for FlowSpec collectors
-    - address: "198.51.100.2"
-      peer_asn: 65001
-      passive: true
+      # receive: true           # (default) import this peer's FlowSpec
+    - address: "203.0.113.1"    # upstream we advertise our FlowSpec to
+      peer_asn: 65000
+      receive: false            # do not import its FlowSpec
+      send: true                # advertise our table to it
 
-interfaces:
-  # Where the Managed ACLs are applied (§16). Default: all data-plane interfaces,
-  # ingress. FlowSpec carries no interface info, so this is local policy.
-  mode: all                     # "all" or "list"
-  # list:                       # required when mode: list
-  #   - GigabitEthernet0/0/0
-  #   - GigabitEthernet0/0/1
-  direction: ingress            # "ingress" (default) or "egress"
+acl:
+  # How the Managed ACLs are applied to the data plane. FlowSpec carries no
+  # interface info, so this is purely local policy.
+  interfaces:
+    # Where the Managed ACLs are applied (§16). Default: all data-plane
+    # interfaces, ingress.
+    mode: all                   # "all" or "list"
+    # list:                     # required when mode: list
+    #   - GigabitEthernet0/0/0
+    #   - GigabitEthernet0/0/1
+    direction: ingress          # "ingress" (default) or "egress"
 
 metrics:
-  # Prometheus /metrics and /healthz endpoint. Empty disables the HTTP listener.
+  # HTTP listener for /metrics (Prometheus), /healthz and /status (JSON snapshot
+  # of detector traffic, rule instances and active leases). Empty disables it.
   listen: ""
 
-local_detector:
-  # Optional local sFlow/VPP-stats detector. When enabled, it emits synthetic
+detector:
+  # Optional sFlow/VPP-stats detector. When enabled, it emits synthetic
   # FlowSpec rules through the same manager path as BGP FlowSpec.
   enabled: false
   sflow:

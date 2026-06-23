@@ -74,16 +74,17 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// opt-in, so default deployments do not expose an extra listener.
 	reg := prometheus.NewRegistry()
 	met := metrics.New(reg)
-	httpSrv := startHTTP(cfg.Metrics.Listen, reg, logger)
+	status := &statusProvider{}
+	httpSrv := startHTTP(cfg.Metrics.Listen, reg, status, logger)
 	defer shutdownHTTP(httpSrv, logger)
 
 	// Connect to VPP with backoff (§19.3: never crash on an unready socket).
 	logger.Info("connecting to VPP", "socket", cfg.VPP.Socket)
 	vppClient, err := vpp.Connect(ctx, vpp.ClientConfig{
 		Socket:        cfg.VPP.Socket,
-		InterfaceMode: cfg.Interfaces.Mode,
-		InterfaceList: cfg.Interfaces.List,
-		Direction:     direction(cfg.Interfaces.Direction),
+		InterfaceMode: cfg.ACL.Interfaces.Mode,
+		InterfaceList: cfg.ACL.Interfaces.List,
+		Direction:     direction(cfg.ACL.Interfaces.Direction),
 	}, logger)
 	if err != nil {
 		return fmt.Errorf("connect VPP: %w", err)
@@ -118,17 +119,17 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 	}()
 
-	if cfg.Local.Enabled {
-		rules, err := compileLocalRules(cfg.Local)
+	if cfg.Detector.Enabled {
+		rules, err := compileDetectorRules(cfg.Detector)
 		if err != nil {
 			return err
 		}
-		logLocalDetectorConfig(logger, cfg.Local, len(rules))
+		logDetectorConfig(logger, cfg.Detector, len(rules))
 
-		samples := make(chan detector.Sample, cfg.Local.SampleQueue)
-		events := make(chan detector.Event, cfg.Local.EventQueue)
+		samples := make(chan detector.Sample, cfg.Detector.SampleQueue)
+		events := make(chan detector.Event, cfg.Detector.EventQueue)
 
-		collector := sflow.NewCollector(cfg.Local.SFlow.Listen, samples, logger)
+		collector := sflow.NewCollector(cfg.Detector.SFlow.Listen, samples, logger)
 		if err := collector.Listen(); err != nil {
 			return fmt.Errorf("listen sFlow: %w", err)
 		}
@@ -140,26 +141,36 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}()
 
 		engine := detector.NewEngine(rules)
-		logger.Info("local detector memory estimate",
+		logger.Info("detector memory estimate",
 			"rules", len(rules),
 			"bytes", engine.MemoryEstimate(),
 			"human", humanBytes(engine.MemoryEstimate()),
 			"note", "upper bound at full max_instances")
 		var statsView detector.StatsView
-		if cfg.Local.VPPStats.Enabled {
+		if cfg.Detector.VPPStats.Enabled {
 			store := vppstats.NewStore(vppstats.DefaultRingConfig())
 			statsView = store
+			status.setStats(store)
 			poller := vppstats.NewPoller(vppstats.Options{
 				Socket:   cfg.VPP.StatsSocket,
-				Interval: cfg.Local.VPPStats.Interval.Duration(),
+				Interval: cfg.Detector.VPPStats.Interval.Duration(),
 			}, store, logger)
 			go poller.Run(ctx)
 		}
-		go detector.NewRunnerWithContext(engine, samples, events, detector.EvalContext{Stats: statsView}, logger).Run(ctx)
+		runner := detector.NewRunnerWithContext(engine, samples, events, detector.EvalContext{Stats: statsView}, logger)
+		status.setRunner(runner)
+		go runner.Run(ctx)
 		ctrl := localrules.New(updates, logger)
-		ctrl.SetDryRun(cfg.Local.DryRun)
-		if cfg.Local.DryRun {
-			logger.Info("local detector in dry-run mode: events are logged, no ACLs are programmed")
+		ctrl.SetDryRun(cfg.Detector.DryRun)
+		// Originate detector leases upstream when any peer is configured to receive
+		// our FlowSpec (the BGP export policy restricts delivery to those peers).
+		if hasSendPeer(cfg.BGP) {
+			ctrl.SetAdvertiser(bgpSrv)
+			logger.Info("detector leases will be advertised to send peers")
+		}
+		status.setLeases(ctrl)
+		if cfg.Detector.DryRun {
+			logger.Info("detector in dry-run mode: events are logged, no ACLs are programmed")
 		}
 		go ctrl.Run(ctx, events)
 	}
@@ -177,6 +188,7 @@ func toBGPOptions(b config.BGP) bgp.Options {
 	for _, p := range b.Peers {
 		peers = append(peers, bgp.PeerOptions{
 			Address: p.Address, PeerASN: p.PeerASN, Port: p.Port, Passive: p.Passive,
+			Receive: p.Receives(), Send: p.Send,
 		})
 	}
 	return bgp.Options{
@@ -193,6 +205,15 @@ func direction(s string) vpp.Direction {
 		return vpp.Egress
 	}
 	return vpp.Ingress
+}
+
+func hasSendPeer(b config.BGP) bool {
+	for _, p := range b.Peers {
+		if p.Send {
+			return true
+		}
+	}
+	return false
 }
 
 func splitListen(hp string) (host string, port int) {
@@ -227,13 +248,14 @@ func newLogger(l config.Log) *slog.Logger {
 	return slog.New(h)
 }
 
-func startHTTP(addr string, reg *prometheus.Registry, logger *slog.Logger) *http.Server {
+func startHTTP(addr string, reg *prometheus.Registry, status *statusProvider, logger *slog.Logger) *http.Server {
 	if addr == "" {
 		logger.Info("metrics/health endpoint disabled")
 		return nil
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/status", status.handler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))

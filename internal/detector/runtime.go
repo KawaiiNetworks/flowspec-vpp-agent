@@ -3,6 +3,7 @@ package detector
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +17,10 @@ type Runner struct {
 	ctx      EvalContext
 	interval time.Duration
 	log      *slog.Logger
+
+	// latest holds the most recent engine snapshot, refreshed on every tick and
+	// read by status consumers on other goroutines (lock-free).
+	latest atomic.Pointer[EngineSnapshot]
 }
 
 func NewRunner(engine *Engine, samples <-chan Sample, events chan<- Event, logger *slog.Logger) *Runner {
@@ -59,7 +64,10 @@ func (r *Runner) Run(ctx context.Context) {
 			}
 			r.engine.Observe(s)
 		case now := <-ticker.C:
-			for _, ev := range r.engine.Tick(now, r.ctx) {
+			events := r.engine.Tick(now, r.ctx)
+			snap := r.engine.Snapshot(now, r.ctx)
+			r.latest.Store(&snap)
+			for _, ev := range events {
 				select {
 				case r.events <- ev:
 				default:
@@ -68,4 +76,13 @@ func (r *Runner) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// Snapshot returns the most recent engine snapshot published on a tick, or an
+// empty snapshot before the first tick. Safe to call from any goroutine.
+func (r *Runner) Snapshot() EngineSnapshot {
+	if s := r.latest.Load(); s != nil {
+		return *s
+	}
+	return EngineSnapshot{}
 }

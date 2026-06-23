@@ -14,12 +14,12 @@ import (
 
 // Config is the top-level agent configuration.
 type Config struct {
-	VPP        VPP        `yaml:"vpp"`
-	BGP        BGP        `yaml:"bgp"`
-	Interfaces Interfaces `yaml:"interfaces"`
-	Metrics    Metrics    `yaml:"metrics"`
-	Local      Local      `yaml:"local_detector"`
-	Log        Log        `yaml:"log"`
+	VPP      VPP      `yaml:"vpp"`
+	BGP      BGP      `yaml:"bgp"`
+	ACL      ACL      `yaml:"acl"`
+	Metrics  Metrics  `yaml:"metrics"`
+	Detector Detector `yaml:"detector"`
+	Log      Log      `yaml:"log"`
 }
 
 // VPP holds VPP connection settings. Both sockets live under /run/vpp (§19).
@@ -36,12 +36,30 @@ type BGP struct {
 	Peers    []Peer `yaml:"peers"`     // one session per peer (§17)
 }
 
-// Peer is a single FlowSpec session (BGP peer).
+// Peer is a single FlowSpec session (BGP peer). A peer can receive FlowSpec
+// (import it into VPP and relay it), send FlowSpec (advertise our whole table to
+// it), or both — independently (§17).
 type Peer struct {
 	Address string `yaml:"address"`  // neighbor IP
 	PeerASN uint32 `yaml:"peer_asn"` // neighbor AS
 	Port    uint16 `yaml:"port"`     // optional neighbor TCP port (transport)
 	Passive bool   `yaml:"passive"`  // listen-only (typical for FlowSpec collectors)
+	// Receive: accept this peer's FlowSpec (apply to VPP, relay to send peers).
+	// Pointer so an omitted value defaults to true, preserving receive-only behavior.
+	Receive *bool `yaml:"receive"`
+	// Send: advertise our entire FlowSpec table (received rules + detector-originated)
+	// to this peer. Defaults to false.
+	Send bool `yaml:"send"`
+}
+
+// Receives reports whether inbound FlowSpec from this peer is accepted. An
+// omitted `receive` defaults to true.
+func (p Peer) Receives() bool { return p.Receive == nil || *p.Receive }
+
+// ACL controls how the Managed ACLs are applied to the data plane. FlowSpec
+// carries no interface info, so this is purely local policy.
+type ACL struct {
+	Interfaces Interfaces `yaml:"interfaces"`
 }
 
 // Interfaces controls where the Managed ACLs are applied (§16).
@@ -56,10 +74,10 @@ type Metrics struct {
 	Listen string `yaml:"listen"` // host:port for /metrics and /healthz; empty disables HTTP
 }
 
-// Local controls the optional sFlow/VPP-stats driven local detector. Rules are
+// Detector controls the optional sFlow/VPP-stats driven detector. Rules are
 // loaded from the embedded predefined set plus an optional runtime directory;
 // RulesEnabled selects which (by name) are activated.
-type Local struct {
+type Detector struct {
 	Enabled      bool       `yaml:"enabled"`
 	DryRun       bool       `yaml:"dry_run"`       // log triggered events; take no action
 	RulesDir     string     `yaml:"rules_dir"`     // optional dir of user rule files (*.yaml)
@@ -95,12 +113,14 @@ func defaults() Config {
 		BGP: BGP{
 			Listen: "0.0.0.0:10179",
 		},
-		Interfaces: Interfaces{
-			Mode:      "all",
-			Direction: "ingress",
+		ACL: ACL{
+			Interfaces: Interfaces{
+				Mode:      "all",
+				Direction: "ingress",
+			},
 		},
 		Log: Log{Level: "info", Format: "text"},
-		Local: Local{
+		Detector: Detector{
 			SFlow:       SFlow{Listen: "0.0.0.0:6343"},
 			SampleQueue: 65536,
 			EventQueue:  1024,
@@ -158,44 +178,47 @@ func (c Config) Validate() error {
 		if p.PeerASN == 0 {
 			return fmt.Errorf("bgp.peers[%d].peer_asn must be set", i)
 		}
+		if !p.Receives() && !p.Send {
+			return fmt.Errorf("bgp.peers[%d] has receive=false and send=false: nothing to do", i)
+		}
 	}
-	switch c.Interfaces.Mode {
+	switch c.ACL.Interfaces.Mode {
 	case "all":
 	case "list":
-		if len(c.Interfaces.List) == 0 {
-			return fmt.Errorf("interfaces.mode=list requires a non-empty interfaces.list")
+		if len(c.ACL.Interfaces.List) == 0 {
+			return fmt.Errorf("acl.interfaces.mode=list requires a non-empty acl.interfaces.list")
 		}
 	default:
-		return fmt.Errorf("interfaces.mode %q must be 'all' or 'list'", c.Interfaces.Mode)
+		return fmt.Errorf("acl.interfaces.mode %q must be 'all' or 'list'", c.ACL.Interfaces.Mode)
 	}
-	switch c.Interfaces.Direction {
+	switch c.ACL.Interfaces.Direction {
 	case "ingress", "egress":
 	default:
-		return fmt.Errorf("interfaces.direction %q must be 'ingress' or 'egress'", c.Interfaces.Direction)
+		return fmt.Errorf("acl.interfaces.direction %q must be 'ingress' or 'egress'", c.ACL.Interfaces.Direction)
 	}
 	if c.Metrics.Listen != "" {
 		if err := validateHostPort(c.Metrics.Listen, "metrics.listen"); err != nil {
 			return err
 		}
 	}
-	if c.Local.Enabled {
-		if len(c.Local.RulesEnabled) == 0 {
-			return fmt.Errorf("local_detector requires a non-empty rules_enabled list")
+	if c.Detector.Enabled {
+		if len(c.Detector.RulesEnabled) == 0 {
+			return fmt.Errorf("detector requires a non-empty rules_enabled list")
 		}
-		if c.Local.SFlow.Listen == "" {
-			return fmt.Errorf("local_detector.sflow.listen must be set")
+		if c.Detector.SFlow.Listen == "" {
+			return fmt.Errorf("detector.sflow.listen must be set")
 		}
-		if err := validateHostPort(c.Local.SFlow.Listen, "local_detector.sflow.listen"); err != nil {
+		if err := validateHostPort(c.Detector.SFlow.Listen, "detector.sflow.listen"); err != nil {
 			return err
 		}
-		if c.Local.SampleQueue <= 0 {
-			return fmt.Errorf("local_detector.sample_queue must be > 0")
+		if c.Detector.SampleQueue <= 0 {
+			return fmt.Errorf("detector.sample_queue must be > 0")
 		}
-		if c.Local.EventQueue <= 0 {
-			return fmt.Errorf("local_detector.event_queue must be > 0")
+		if c.Detector.EventQueue <= 0 {
+			return fmt.Errorf("detector.event_queue must be > 0")
 		}
-		if c.Local.VPPStats.Enabled && c.Local.VPPStats.Interval.Duration() <= 0 {
-			return fmt.Errorf("local_detector.vpp_stats.interval must be > 0")
+		if c.Detector.VPPStats.Enabled && c.Detector.VPPStats.Interval.Duration() <= 0 {
+			return fmt.Errorf("detector.vpp_stats.interval must be > 0")
 		}
 	}
 	return nil

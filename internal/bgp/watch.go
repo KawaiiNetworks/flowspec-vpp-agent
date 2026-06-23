@@ -39,6 +39,17 @@ func (s *Server) handleEvent(r *api.WatchEventResponse) {
 }
 
 func (s *Server) handlePath(path *api.Path) {
+	session := path.GetNeighborIp()
+	if session == "" {
+		session = path.GetSourceId()
+	}
+	// adj-rib-in is watched pre-policy, so apply the per-peer receive gate here:
+	// a non-receive peer's FlowSpec must never reach the manager / VPP.
+	if !s.receivePeers[session] {
+		s.log.Debug("skip path from non-receive peer", "peer", session)
+		return
+	}
+
 	nlri, err := apiutil.GetNativeNlri(path)
 	if err != nil {
 		s.log.Debug("skip path: cannot decode NLRI", "error", err)
@@ -57,10 +68,6 @@ func (s *Server) handlePath(path *api.Path) {
 		return
 	}
 
-	session := path.GetNeighborIp()
-	if session == "" {
-		session = path.GetSourceId()
-	}
 	op := OpAnnounce
 	if path.GetIsWithdraw() {
 		op = OpWithdraw

@@ -29,7 +29,7 @@ vpp:
 | Field          | Type   | Default                 | Description |
 | -------------- | ------ | ----------------------- | ----------- |
 | `socket`       | string | `/run/vpp/api.sock`     | VPP **binary API** unix socket. The agent uses it to issue `acl_add_replace`, enumerate interfaces and attach ACLs. **Required** (must be non-empty). |
-| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket path. Used by `local_detector.vpp_stats` when the local detector is enabled. |
+| `stats_socket` | string | `/run/vpp/stats.sock`   | VPP stats socket path. Used by `detector.vpp_stats` when the detector is enabled. |
 
 > Socket access from a container: `/run/vpp` is usually owned by root (or the vpp
 > group); `user: "0:0"` in compose is the simplest. The agent retries with backoff
@@ -67,23 +67,41 @@ bgp:
 | `peer_asn` | uint32 | —       | Neighbor AS number. **Required and non-zero.** |
 | `port`     | uint16 | `0`     | Neighbor TCP transport port; `0` means default. FlowSpec collectors (e.g. FastNetMon) usually dial in, so this is rarely needed. |
 | `passive`  | bool   | `false` | Passive (listen-only) mode. Often `true` for FlowSpec collection. |
+| `receive`  | bool   | `true`  | Import this peer's FlowSpec: apply it to VPP and relay it to `send` peers. Set `false` for an upstream you only advertise to. |
+| `send`     | bool   | `false` | Advertise our entire FlowSpec table — both rules received from `receive` peers and detector-originated drops — to this peer. |
 
-Each session negotiates both IPv4 and IPv6 FlowSpec address families.
+A peer must have `receive` or `send` (or both); `receive: false` together with
+`send: false` is rejected. Each session negotiates both IPv4 and IPv6 FlowSpec
+address families.
+
+**Direction is enforced by GoBGP policy.** An export policy (default reject)
+admits originated/relayed FlowSpec only to `send` peers, so a non-send peer never
+receives our routes even though it negotiated the family. An import policy
+(default reject) keeps a non-`receive` peer's routes out of the local RIB so they
+are never relayed; inbound application to VPP is gated independently per peer.
+
+The agent only ever **originates** a pure drop (`traffic-rate 0`). Relayed routes
+are forwarded as received.
 
 ---
 
-## interfaces
+## acl
 
-Where the Managed ACLs are applied, and in which direction (local policy —
-FlowSpec carries no interface information).
+How the Managed ACLs are applied to the data plane. FlowSpec carries no
+interface information, so this is purely local policy.
 
 ```yaml
-interfaces:
-  mode: all
-  direction: ingress
-  # list:
-  #   - GigabitEthernet0/0/0
+acl:
+  interfaces:
+    mode: all
+    direction: ingress
+    # list:
+    #   - GigabitEthernet0/0/0
 ```
+
+### acl.interfaces
+
+Where the Managed ACLs are applied, and in which direction.
 
 | Field       | Type   | Default    | Description |
 | ----------- | ------ | ---------- | ----------- |
@@ -104,7 +122,7 @@ metrics:
 
 | Field    | Type   | Default      | Description |
 | -------- | ------ | ------------ | ----------- |
-| `listen` | string | empty string | Empty disables the HTTP listener. Set a valid `host:port` such as `127.0.0.1:9469` or `0.0.0.0:9469` to expose `/metrics` and `/healthz`; the `healthcheck` subcommand requests `/healthz` on that port locally. |
+| `listen` | string | empty string | Empty disables the HTTP listener. Set a valid `host:port` such as `127.0.0.1:9469` or `0.0.0.0:9469` to expose `/metrics`, `/healthz` and `/status`; the `healthcheck` subcommand requests `/healthz` on that port locally. |
 
 Exposed metrics:
 
@@ -116,16 +134,35 @@ Exposed metrics:
 - `flowspec_rules_applied_total{family,peer}` — rules accepted and applied.
 - `flowspec_acl_entries{family}` — current entry count of each Managed ACL (gauge).
 
+### `/status` (JSON)
+
+A `GET /status` on the same listener returns a JSON snapshot of the detector's
+live state (empty sections when the detector is disabled):
+
+- `traffic` — latest per-interface rates from the VPP stats poller
+  (`rx_pps` / `tx_pps` / `drop_pps`).
+- `rules` — every detector rule with its occupancy (`instance_count` /
+  `max_instances`) and current instances. Each instance carries its descriptor
+  (family, proto, src/dst, ports), current `pps` / `bps` from the fine ring, the
+  evaluated trigger `terms`, and `firing` (whether the trigger expression is
+  currently holding).
+- `active` — the synthetic FlowSpec leases currently announced through the
+  manager, each with its `flowspec` identity, `family` and `expires_at`.
+
+The rule and lease sections refresh once per detector tick; traffic is the most
+recent poll. The endpoint is read-only and unauthenticated — bind `listen` to a
+trusted address.
+
 ---
 
-## local_detector
+## detector
 
-Optional local sFlow/VPP-stats detector. It listens for sFlow v5 datagrams,
+Optional sFlow/VPP-stats detector. It listens for sFlow v5 datagrams,
 updates fixed-capacity rule state, emits synthetic FlowSpec rules into the same
 manager path as BGP, refreshes active leases, and withdraws them when TTL expires.
 
 ```yaml
-local_detector:
+detector:
   enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
@@ -144,7 +181,7 @@ local_detector:
 
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
-| `enabled` | bool | `false` | Enables the local detector. |
+| `enabled` | bool | `false` | Enables the detector. |
 | `dry_run` | bool | `false` | Log each triggered event's description and take no action (no ACLs programmed). |
 | `rules_dir` | string | empty | Optional directory of user rule files (`*.yaml`). Files override built-in rules of the same name. |
 | `rules_enabled` | list | empty | Rule names to activate. Required when enabled. Names resolve against the embedded predefined rules plus `rules_dir`. |

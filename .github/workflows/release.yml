@@ -1,0 +1,56 @@
+name: Build binary
+
+# Builds the single static flowspec-vpp-agent binary (linux/amd64, CGO-free).
+#
+#   - every push / PR / manual run: uploads the binary as a downloadable
+#     workflow artifact (Actions UI → run → Artifacts).
+#   - push of a tag vX.Y.Z: additionally publishes a GitHub Release with the
+#     binary attached. `make build` stamps the version from `git describe`, so
+#     the released binary reports the tag via `flowspec-vpp-agent version`.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # required to create the release on tag builds
+
+jobs:
+  build:
+    name: Build static binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags so `git describe --tags` works
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make build
+
+      - name: Stage artifact
+        run: install -D bin/flowspec-vpp-agent dist/flowspec-vpp-agent-linux-amd64
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flowspec-vpp-agent-linux-amd64
+          path: dist/flowspec-vpp-agent-linux-amd64
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/flowspec-vpp-agent-linux-amd64
+          generate_release_notes: true

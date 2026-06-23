@@ -25,6 +25,10 @@ type PeerOptions struct {
 	PeerASN uint32
 	Port    uint16 // optional transport port
 	Passive bool   // listen-only (typical for FlowSpec collectors)
+	// Receive: accept this peer's FlowSpec (apply to VPP, relay onward).
+	Receive bool
+	// Send: advertise our whole FlowSpec table to this peer.
+	Send bool
 }
 
 // Server embeds a GoBGP speaker and turns received FlowSpec routes into a stream
@@ -34,6 +38,9 @@ type Server struct {
 	log     *slog.Logger
 	bgp     *server.BgpServer
 	updates chan Update
+	// receivePeers is the set of peer addresses whose inbound FlowSpec we apply
+	// to VPP. adj-rib-in is watched pre-policy, so this gates handlePath directly.
+	receivePeers map[string]bool
 }
 
 // New creates a Server. Call Start to bring it up.
@@ -41,10 +48,17 @@ func New(opts Options, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	receivePeers := make(map[string]bool, len(opts.Peers))
+	for _, p := range opts.Peers {
+		if p.Receive {
+			receivePeers[p.Address] = true
+		}
+	}
 	return &Server{
-		opts:    opts,
-		log:     logger,
-		updates: make(chan Update, 1024),
+		opts:         opts,
+		log:          logger,
+		updates:      make(chan Update, 1024),
+		receivePeers: receivePeers,
 	}
 }
 
@@ -72,6 +86,12 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	if err := s.bgp.StartBgp(ctx, &api.StartBgpRequest{Global: global}); err != nil {
 		return fmt.Errorf("start bgp: %w", err)
+	}
+
+	// Install direction policies before peers come up, so propagation is gated
+	// from the first established session.
+	if err := s.applyPolicies(ctx); err != nil {
+		return fmt.Errorf("apply policies: %w", err)
 	}
 
 	for _, p := range s.opts.Peers {

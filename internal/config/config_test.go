@@ -21,8 +21,8 @@ bgp:
 	if cfg.BGP.Listen != "0.0.0.0:10179" {
 		t.Errorf("default bgp.listen = %q", cfg.BGP.Listen)
 	}
-	if cfg.Interfaces.Mode != "all" || cfg.Interfaces.Direction != "ingress" {
-		t.Errorf("interface defaults = %+v", cfg.Interfaces)
+	if cfg.ACL.Interfaces.Mode != "all" || cfg.ACL.Interfaces.Direction != "ingress" {
+		t.Errorf("interface defaults = %+v", cfg.ACL.Interfaces)
 	}
 	if cfg.Metrics.Listen != "" {
 		t.Errorf("default metrics.listen = %q, want disabled", cfg.Metrics.Listen)
@@ -47,11 +47,11 @@ metrics:
 	}
 }
 
-func TestParse_LocalDetector(t *testing.T) {
+func TestParse_Detector(t *testing.T) {
 	cfg, err := Parse([]byte(`
 bgp:
   router_id: 192.0.2.1
-local_detector:
+detector:
   enabled: true
   rules_dir: /etc/flowspec-vpp-agent/rules
   rules_enabled:
@@ -68,17 +68,41 @@ local_detector:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Local.Enabled {
-		t.Fatal("local detector disabled")
+	if !cfg.Detector.Enabled {
+		t.Fatal("detector disabled")
 	}
-	if cfg.Local.VPPStats.Interval.Duration().String() != "2s" {
-		t.Fatalf("stats interval = %s, want 2s", cfg.Local.VPPStats.Interval.Duration())
+	if cfg.Detector.VPPStats.Interval.Duration().String() != "2s" {
+		t.Fatalf("stats interval = %s, want 2s", cfg.Detector.VPPStats.Interval.Duration())
 	}
-	if len(cfg.Local.RulesEnabled) != 2 || cfg.Local.RulesEnabled[0] != "dns-reflection" {
-		t.Fatalf("rules_enabled = %v", cfg.Local.RulesEnabled)
+	if len(cfg.Detector.RulesEnabled) != 2 || cfg.Detector.RulesEnabled[0] != "dns-reflection" {
+		t.Fatalf("rules_enabled = %v", cfg.Detector.RulesEnabled)
 	}
-	if cfg.Local.RulesDir != "/etc/flowspec-vpp-agent/rules" {
-		t.Fatalf("rules_dir = %q", cfg.Local.RulesDir)
+	if cfg.Detector.RulesDir != "/etc/flowspec-vpp-agent/rules" {
+		t.Fatalf("rules_dir = %q", cfg.Detector.RulesDir)
+	}
+}
+
+func TestParse_PeerDirections(t *testing.T) {
+	cfg, err := Parse([]byte(`
+bgp:
+  router_id: 192.0.2.1
+  peers:
+    - address: 198.51.100.1
+      peer_asn: 65001
+    - address: 203.0.113.1
+      peer_asn: 65000
+      receive: false
+      send: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Omitted receive defaults to true; omitted send to false.
+	if !cfg.BGP.Peers[0].Receives() || cfg.BGP.Peers[0].Send {
+		t.Errorf("peer0 = receive %v send %v, want true/false", cfg.BGP.Peers[0].Receives(), cfg.BGP.Peers[0].Send)
+	}
+	if cfg.BGP.Peers[1].Receives() || !cfg.BGP.Peers[1].Send {
+		t.Errorf("peer1 = receive %v send %v, want false/true", cfg.BGP.Peers[1].Receives(), cfg.BGP.Peers[1].Send)
 	}
 }
 
@@ -109,14 +133,15 @@ func TestValidate_Errors(t *testing.T) {
 		"bgp:\n  listen: '[not-ip]:10179'\n  router_id: 192.0.2.1\n",
 		"bgp:\n  router_id: 2001:db8::1\n",
 		"metrics:\n  listen: bad-port\n",
-		"local_detector:\n  enabled: true\n", // missing rules_enabled
-		"local_detector:\n  enabled: true\n  rules_enabled: [x]\n  sflow:\n    listen: bad\n",
-		"local_detector:\n  enabled: true\n  rules_enabled: [x]\n  sample_queue: 0\n",
-		"local_detector:\n  enabled: true\n  rules_enabled: [x]\n  event_queue: 0\n",
-		"interfaces:\n  mode: bogus\n",
-		"interfaces:\n  mode: list\n", // list mode without list
+		"detector:\n  enabled: true\n", // missing rules_enabled
+		"detector:\n  enabled: true\n  rules_enabled: [x]\n  sflow:\n    listen: bad\n",
+		"detector:\n  enabled: true\n  rules_enabled: [x]\n  sample_queue: 0\n",
+		"detector:\n  enabled: true\n  rules_enabled: [x]\n  event_queue: 0\n",
+		"acl:\n  interfaces:\n    mode: bogus\n",
+		"acl:\n  interfaces:\n    mode: list\n", // list mode without list
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",
-		"bgp:\n  peers:\n    - address: 1.2.3.4\n", // missing peer_asn
+		"bgp:\n  peers:\n    - address: 1.2.3.4\n",                                                             // missing peer_asn
+		"bgp:\n  peers:\n    - address: 1.2.3.4\n      peer_asn: 1\n      receive: false\n      send: false\n", // no-op peer
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {

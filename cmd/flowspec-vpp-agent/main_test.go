@@ -36,7 +36,7 @@ func TestSplitListen_IPv6(t *testing.T) {
 }
 
 func TestCompileLocalRulesBuiltin(t *testing.T) {
-	rules, err := compileLocalRules(config.Local{RulesEnabled: []string{"udp-flood-ipv4"}})
+	rules, err := compileDetectorRules(config.Detector{RulesEnabled: []string{"udp-flood-ipv4"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestAllBuiltinRulesCompile(t *testing.T) {
 	for name := range defs {
 		names = append(names, name)
 	}
-	rules, err := compileLocalRules(config.Local{RulesEnabled: names})
+	rules, err := compileDetectorRules(config.Detector{RulesEnabled: names})
 	if err != nil {
 		t.Fatalf("compiling all %d built-in rules: %v", len(names), err)
 	}
@@ -91,7 +91,7 @@ rules:
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rules, err := compileLocalRules(config.Local{RulesDir: dir, RulesEnabled: []string{"file-rule"}})
+	rules, err := compileDetectorRules(config.Detector{RulesDir: dir, RulesEnabled: []string{"file-rule"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ rules:
 }
 
 func TestCompileLocalRulesUnknown(t *testing.T) {
-	if _, err := compileLocalRules(config.Local{RulesEnabled: []string{"does-not-exist"}}); err == nil {
+	if _, err := compileDetectorRules(config.Detector{RulesEnabled: []string{"does-not-exist"}}); err == nil {
 		t.Fatal("expected error for unknown rule name")
 	}
 }
