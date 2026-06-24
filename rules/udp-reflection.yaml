@@ -2,13 +2,14 @@
 # with a large response aimed at the victim, so on the wire we see
 # `udp, src_port = <service port>, dst = victim`. Identity is the VICTIM (dst) plus
 # the reflector SERVICE PORT (src_port exact); the reflector address itself varies
-# and is collapsed. Rank by bps (amplification = volume) and emit a precise
-# "drop udp src_port <service> -> victim" so only the attack vector is shed.
+# and is collapsed. Emit a precise "drop udp src_port <service> -> victim".
 #
-# One rule covers the common reflector ports; a second carries a lower floor for
-# the extreme amplifiers (CharGEN/QOTD/memcached). bps thresholds are per-victim
-# and sampled — tune to your link sizes. max_instances: broad list -> 100,
-# narrow high-amp list -> 50.
+# Burst detection on bytes/sec (amplification = volume): fire only on a bps SPIKE
+# above the descriptor's own baseline AND above an absolute floor, so a host that
+# legitimately receives volume FROM a service port (e.g. a busy resolver pulling
+# DNS) is not dropped while idle-ish, only when it is genuinely flooded.
+#
+# Scopes: per host (dst /32//128, pool 100) and per subnet (dst /24//48, pool 30).
 rules:
   # Common reflection source ports: QOTD(17) CharGEN(19) DNS(53) TFTP(69)
   # Portmap(111) NTP(123) NetBIOS(137/138) SNMP(161) CLDAP(389) RIPv1(520)
@@ -21,17 +22,20 @@ rules:
       proto: udp
       src_port: [17, 19, 53, 69, 111, 123, 137, 138, 161, 389, 520, 1434, 1701, 1900, 3283, 3389, 3478, 3702, 5353, 5683, 10001, 11211, 47808]
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
-    rank: rate
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct reflectors (a single legit server is exempt)
+    rank: bps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        rate: { metric: bps, window: 10s }
-      expr: "rate > 100000000"   # 100 Mbps to one victim from one reflector service
-      sustained: 10s
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 50000000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 600s, refresh: true }
-    description: "udp reflection to {{dst}} sport={{src_port}}, bps={{rate}}"
+    description: "udp reflection to {{dst}} sport={{src_port}}, bps={{bps}}"
 
   - name: udp-reflection-ipv6
     match:
@@ -39,37 +43,85 @@ rules:
       proto: udp
       src_port: [17, 19, 53, 69, 111, 123, 137, 138, 161, 389, 520, 1434, 1701, 1900, 3283, 3389, 3478, 3702, 5353, 5683, 10001, 11211, 47808]
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: exact, dst_port: all }
-    rank: rate
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
+    rank: bps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        rate: { metric: bps, window: 10s }
-      expr: "rate > 100000000"
-      sustained: 10s
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 50000000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 600s, refresh: true }
-    description: "udp reflection to {{dst}} sport={{src_port}}, bps={{rate}}"
+    description: "udp reflection to {{dst}} sport={{src_port}}, bps={{bps}}"
 
-  # Extreme amplifiers (CharGEN 19, QOTD 17, memcached 11211): a lower floor so
-  # they are not hidden behind the generic 100 Mbps threshold.
+  # Reflection sprayed across a whole SUBNET (carpet bomb): aggregate dst to /24//48.
+  - name: udp-reflection-subnet-ipv4
+    match:
+      family: ipv4
+      proto: udp
+      src_port: [17, 19, 53, 69, 111, 123, 137, 138, 161, 389, 520, 1434, 1701, 1900, 3283, 3389, 3478, 3702, 5353, 5683, 10001, 11211, 47808]
+    aggregate: { proto: exact, src: "/0", dst: "/24", src_port: exact, dst_port: all }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]   # require the reflection to spread across the /24
+    rank: bps
+    history:
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
+      max_instances: 30
+    trigger:
+      terms:
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 60000000"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "carpet udp reflection on {{dst}} sport={{src_port}}, bps={{bps}}"
+
+  - name: udp-reflection-subnet-ipv6
+    match:
+      family: ipv6
+      proto: udp
+      src_port: [17, 19, 53, 69, 111, 123, 137, 138, 161, 389, 520, 1434, 1701, 1900, 3283, 3389, 3478, 3702, 5353, 5683, 10001, 11211, 47808]
+    aggregate: { proto: exact, src: "/0", dst: "/48", src_port: exact, dst_port: all }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]
+    rank: bps
+    history:
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
+      max_instances: 30
+    trigger:
+      terms:
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 60000000"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 600s, refresh: true }
+    description: "carpet udp reflection on {{dst}} sport={{src_port}}, bps={{bps}}"
+
+  # Extreme amplifiers (CharGEN 19, QOTD 17, memcached 11211): a lower floor.
   - name: udp-reflection-amp-ipv4
     match:
       family: ipv4
       proto: udp
       src_port: [17, 19, 11211]
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: exact, dst_port: all }
-    rank: rate
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct reflectors (a single legit server is exempt)
+    rank: bps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 50
     trigger:
       terms:
-        rate: { metric: bps, window: 10s }
-      expr: "rate > 50000000"
-      sustained: 10s
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 30000000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 600s, refresh: true }
-    description: "high-amplification udp reflection to {{dst}} sport={{src_port}}, bps={{rate}}"
+    description: "high-amplification udp reflection to {{dst}} sport={{src_port}}, bps={{bps}}"
 
   - name: udp-reflection-amp-ipv6
     match:
@@ -77,14 +129,17 @@ rules:
       proto: udp
       src_port: [17, 19, 11211]
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: exact, dst_port: all }
-    rank: rate
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
+    rank: bps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 50
     trigger:
       terms:
-        rate: { metric: bps, window: 10s }
-      expr: "rate > 50000000"
-      sustained: 10s
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 30000000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 600s, refresh: true }
-    description: "high-amplification udp reflection to {{dst}} sport={{src_port}}, bps={{rate}}"
+    description: "high-amplification udp reflection to {{dst}} sport={{src_port}}, bps={{bps}}"

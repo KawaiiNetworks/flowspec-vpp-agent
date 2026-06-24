@@ -50,6 +50,7 @@ type InstanceSnapshot struct {
 	Score     float64            `json:"score"` // HeavyKeeper admission estimate (recent weight)
 	Firing    bool               `json:"firing"`
 	Terms     map[string]float64 `json:"terms,omitempty"`
+	Spread    map[string]int     `json:"spread,omitempty"` // ratio_detection: field -> percent
 }
 
 // Snapshot builds a view of all rules at time now. It must be called on the
@@ -88,6 +89,13 @@ func (r *Rule) instanceSnapshot(inst *instance, now time.Time, ctx EvalContext) 
 			terms[t.name] = r.termValue(t, inst, now, ctx)
 		}
 	}
+	var spread map[string]int
+	if len(r.spreadFields) > 0 && inst.spread != nil {
+		spread = make(map[string]int, len(r.spreadFields))
+		for i, f := range r.spreadFields {
+			spread[f.String()] = inst.spread[i].ratioPct()
+		}
+	}
 	return InstanceSnapshot{
 		Key:       r.descriptorString(inst.key),
 		Family:    field("family"),
@@ -105,5 +113,6 @@ func (r *Rule) instanceSnapshot(inst *instance, now time.Time, ctx EvalContext) 
 		Score:     r.sketch.estimate(inst.keyHash),
 		Firing:    !inst.trueSince.IsZero(),
 		Terms:     terms,
+		Spread:    spread,
 	}
 }

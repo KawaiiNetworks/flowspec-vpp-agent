@@ -29,6 +29,9 @@ type instance struct {
 	lastEvent     time.Time
 	trueSince     time.Time // when the trigger expression first became true
 	lastIngressIf string
+	// spread holds one diversity estimator per rule.spreadFields (lazily created);
+	// nil when the rule has no ratio_detection.
+	spread []spreadEstimator
 }
 
 func newInstance(key descriptor, history historySpec, now time.Time) *instance {

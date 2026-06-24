@@ -846,6 +846,252 @@ rules:
 	}
 }
 
+// Carpet-bomb detection: hosts spread across a /24, each below a per-host
+// threshold, collapse into one subnet instance whose summed rate fires — and the
+// emitted drop targets the /24.
+func TestEngine_CarpetBombSubnetAggregation(t *testing.T) {
+	cfg := `
+rules:
+  - name: carpet
+    match: { family: ipv4, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/24", src_port: all, dst_port: exact }
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 50 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 3000"
+    flowspec: { action: drop, ttl: 60s }
+    description: "carpet to {{dst}} dport={{dst_port}}"
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(9000, 0)
+	// 5 distinct hosts in 23.154.104.0/24, same dst_port, each only 1000 pps
+	// (a per-host /32 rule at >3000 would never fire) — together 5000 pps.
+	for i := 1; i <= 5; i++ {
+		engine.Observe(Sample{
+			At: now, Family: flowspec.FamilyIPv4,
+			Src:   netip.MustParseAddr("198.51.100.1"),
+			Dst:   netip.AddrFrom4([4]byte{23, 154, 104, byte(i)}),
+			Proto: protoUDP, DstPort: 4444, PacketLen: 100, SampleRate: 1000,
+		})
+	}
+	if got := rules[0].InstanceCount(); got != 1 {
+		t.Fatalf("instance count = %d, want 1 (one /24)", got)
+	}
+	events := engine.Tick(now, EvalContext{})
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1 (subnet aggregate fires)", len(events))
+	}
+	if m := events[0].Rule.Match; !m.HasDst || m.Dst.String() != "23.154.104.0/24" {
+		t.Fatalf("emitted dst = %v %s, want 23.154.104.0/24", m.HasDst, m.Dst)
+	}
+}
+
+// Burst (baseline-relative) detection: steady high-volume traffic to one dst:port
+// (e.g. a busy tracker) must NOT fire once its baseline is established, but a sharp
+// spike above that baseline must. Floor is low; the ratio is what protects the
+// steady service.
+func TestEngine_BurstRelativeNoFalsePositive(t *testing.T) {
+	cfg := `
+rules:
+  - name: burst
+    match: { family: ipv4, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
+    history:
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
+      max_instances: 10
+    trigger:
+      terms:
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 1000"
+      sustained: 0s
+    flowspec: { action: drop, ttl: 60s }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	dst := netip.MustParseAddr("203.0.113.5")
+	src := netip.MustParseAddr("198.51.100.1")
+	t0 := time.Unix(100000, 0)
+	feed := func(at time.Time, weight uint32) {
+		engine.Observe(Sample{
+			At: at, Family: flowspec.FamilyIPv4, Src: src, Dst: dst,
+			Proto: protoUDP, DstPort: 80, PacketLen: 100, SampleRate: weight,
+		})
+	}
+	// 7 minutes of steady ~2000 pps (one sample/sec, weight 2000).
+	for s := 0; s < 7*60; s++ {
+		feed(t0.Add(time.Duration(s)*time.Second), 2000)
+	}
+	now := t0.Add(7 * time.Minute)
+	// Steady: pps ~= pps_base ~= 2000, so the 5x ratio is never met -> no event.
+	if ev := engine.Tick(now, EvalContext{}); len(ev) != 0 {
+		t.Fatalf("steady traffic fired %d events, want 0 (burst-relative protects it)", len(ev))
+	}
+	// Spike: one big sample lifts the 10s window far above the 5m baseline.
+	feed(now, 200000)
+	if ev := engine.Tick(now, EvalContext{}); len(ev) != 1 {
+		t.Fatalf("spike fired %d events, want 1", len(ev))
+	}
+}
+
+// Destination port 0 (a carpet/ACK-flood signature) is caught by an absolute
+// low-floor rule and collapsed to a single /24 drop carrying proto + port 0.
+func TestEngine_PortZeroCarpet(t *testing.T) {
+	cfg := `
+rules:
+  - name: pz
+    match: { family: ipv4, proto: [tcp, udp], dst_port: 0 }
+    aggregate: { proto: exact, src: "/0", dst: "/24", src_port: all, dst_port: exact }
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 30 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 1000"
+    flowspec: { action: drop, ttl: 60s }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(rules)
+	now := time.Unix(9100, 0)
+	// TCP ACK to port 0, sprayed across the /24 (matching the observed capture).
+	for i := 1; i <= 5; i++ {
+		engine.Observe(Sample{
+			At: now, Family: flowspec.FamilyIPv4,
+			Src:   netip.MustParseAddr("5.45.96.101"),
+			Dst:   netip.AddrFrom4([4]byte{23, 154, 104, byte(i)}),
+			Proto: protoTCP, DstPort: 0, PacketLen: 1450, SampleRate: 1000,
+		})
+	}
+	if got := rules[0].InstanceCount(); got != 1 {
+		t.Fatalf("instances = %d, want 1 (/24, tcp, port0)", got)
+	}
+	events := engine.Tick(now, EvalContext{})
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	m := events[0].Rule.Match
+	if !m.HasDst || m.Dst.String() != "23.154.104.0/24" {
+		t.Fatalf("dst = %s, want 23.154.104.0/24", m.Dst)
+	}
+	if len(m.Proto) != 1 || m.Proto[0].Value != protoTCP {
+		t.Fatalf("proto = %+v, want tcp", m.Proto)
+	}
+	if len(m.DstPort) == 0 || m.DstPort[0].Value != 0 {
+		t.Fatalf("dst port ops = %+v, want port 0", m.DstPort)
+	}
+}
+
+// ratio_detection gates a wide-range rule on diversity: one busy destination does
+// not trip a /24 rule, but many distinct destinations (a carpet) does.
+func TestEngine_SpreadGate(t *testing.T) {
+	cfg := `
+rules:
+  - name: sg
+    match: { family: ipv4, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/24", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 10 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 1s }
+      expr: "pps > 10000"
+    flowspec: { action: drop, ttl: 60s }
+`
+	rules, err := CompileConfig([]byte(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// One busy dst (low diversity): 20 kpps to a single host -> gated, no event.
+	engine := NewEngine(rules)
+	now := time.Unix(9200, 0)
+	for i := 0; i < 20; i++ {
+		engine.Observe(Sample{
+			At: now, Family: flowspec.FamilyIPv4,
+			Src:   netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}),
+			Dst:   netip.MustParseAddr("23.154.104.9"),
+			Proto: protoUDP, DstPort: 80, PacketLen: 100, SampleRate: 1000,
+		})
+	}
+	if ev := engine.Tick(now, EvalContext{}); len(ev) != 0 {
+		t.Fatalf("single-dst fired %d events, want 0 (spread gate exempts it)", len(ev))
+	}
+
+	// Many distinct hosts but CLUSTERED in .1-.30 (a small slice of the /24's
+	// range): numeric-region spread is low -> still gated. (A hash would wrongly
+	// scatter these and let it through.)
+	engine = NewEngine(rules)
+	now = time.Unix(9250, 0)
+	for i := 1; i <= 30; i++ {
+		engine.Observe(Sample{
+			At: now, Family: flowspec.FamilyIPv4,
+			Src:   netip.MustParseAddr("5.45.96.101"),
+			Dst:   netip.AddrFrom4([4]byte{23, 154, 104, byte(i)}),
+			Proto: protoUDP, DstPort: 80, PacketLen: 100, SampleRate: 1000,
+		})
+	}
+	if ev := engine.Tick(now, EvalContext{}); len(ev) != 0 {
+		t.Fatalf("clustered dsts fired %d events, want 0 (low range coverage)", len(ev))
+	}
+
+	// Hosts spread across the whole /24 range -> high spread -> fires.
+	engine = NewEngine(rules)
+	now = time.Unix(9300, 0)
+	for i := 1; i <= 30; i++ {
+		engine.Observe(Sample{
+			At: now, Family: flowspec.FamilyIPv4,
+			Src:   netip.MustParseAddr("5.45.96.101"),
+			Dst:   netip.AddrFrom4([4]byte{23, 154, 104, byte(i * 8)}), // .8 .. .240
+			Proto: protoUDP, DstPort: 80, PacketLen: 100, SampleRate: 1000,
+		})
+	}
+	if ev := engine.Tick(now, EvalContext{}); len(ev) != 1 {
+		t.Fatalf("carpet across /24 fired %d events, want 1", len(ev))
+	}
+}
+
+func TestCompile_RatioValidation(t *testing.T) {
+	mk := func(agg, ratio string) string {
+		return `
+rules:
+  - name: r
+    match: { family: ipv4, proto: udp }
+    aggregate: ` + agg + `
+    ratio_detection: ` + ratio + `
+    history: { fine: { resolution: 1s, duration: 10s }, max_instances: 5 }
+    trigger: { terms: { pps: { metric: pps, window: 1s } }, expr: "pps > 10000" }
+    flowspec: { action: drop, ttl: 60s }
+`
+	}
+	// ratio on a full-host (non-aggregated) field is rejected.
+	if _, err := CompileConfig([]byte(mk(`{ src: "/32", dst: "/32", dst_port: exact }`, `[ { name: dst, min_ratio: 30 } ]`))); err == nil {
+		t.Fatal("expected error: ratio on full-host dst")
+	}
+	// ratio on an exact port is rejected.
+	if _, err := CompileConfig([]byte(mk(`{ src: "/24", dst: "/32", dst_port: exact }`, `[ { name: dst_port, min_ratio: 30 } ]`))); err == nil {
+		t.Fatal("expected error: ratio on exact dst_port")
+	}
+	// unknown field name is rejected.
+	if _, err := CompileConfig([]byte(mk(`{ src: "/24", dst: "/32" }`, `[ { name: nonsense, min_ratio: 30 } ]`))); err == nil {
+		t.Fatal("expected error: unknown ratio field")
+	}
+	// aggregated src + src_port: all is accepted.
+	if _, err := CompileConfig([]byte(mk(`{ src: "/24", dst: "/32", src_port: all, dst_port: exact }`, `[ { name: src, min_ratio: 30 }, { name: src_port, min_ratio: 30 } ]`))); err != nil {
+		t.Fatalf("valid ratio config rejected: %v", err)
+	}
+}
+
 func TestCompile_RejectsPortsWithProtoAll(t *testing.T) {
 	cfg := `
 rules:

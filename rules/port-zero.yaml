@@ -1,0 +1,35 @@
+# Predefined: traffic to destination port 0. TCP/UDP port 0 is reserved and is
+# never used by legitimate traffic, so ANY sustained rate of it is an attack — it
+# is a common carpet-bomb / ACK-flood signature (every packet targets <victim>.0).
+#
+# Because the signature is unambiguous, this is an ABSOLUTE rule (no baseline) with
+# a low floor — there is nothing legitimate to false-positive on. Aggregated to a
+# subnet (/24//48) so a spread carpet collapses into a single precise drop:
+# "drop tcp dport=0 -> 23.154.104.0/24". proto is exact, so only the offending
+# protocol+port is shed, never the whole subnet.
+rules:
+  - name: dst-port-zero-ipv4
+    match: { family: ipv4, proto: [tcp, udp], dst_port: 0 }
+    aggregate: { proto: exact, src: "/0", dst: "/24", src_port: all, dst_port: exact }
+    rank: pps
+    history: { fine: { resolution: 1s, duration: 10m }, max_instances: 30 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 10000"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "port-0 flood (proto {{proto}}) on {{dst}}, pps={{pps}}"
+
+  - name: dst-port-zero-ipv6
+    match: { family: ipv6, proto: [tcp, udp], dst_port: 0 }
+    aggregate: { proto: exact, src: "/0", dst: "/48", src_port: all, dst_port: exact }
+    rank: pps
+    history: { fine: { resolution: 1s, duration: 10m }, max_instances: 30 }
+    trigger:
+      terms:
+        pps: { metric: pps, window: 10s }
+      expr: "pps > 10000"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "port-0 flood (proto {{proto}}) on {{dst}}, pps={{pps}}"

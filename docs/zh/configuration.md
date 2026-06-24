@@ -273,6 +273,26 @@ echo-request flood)。
 `icmp_type: all` / `icmp_code: all` 可把对应字段通配(丢往受害者的全部 ICMP)。内置 `icmp-flood-*`
 规则用的是 `icmp_type: exact, icmp_code: all`。
 
+#### ratio_detection —— 占比/多样性闸门(可选)
+
+被**聚合**的字段(塌缩成一个范围——`dst "/24"`、`src_port all` 等)其实仍然承载着每个包的真实值。
+`ratio_detection` 在**最近若干个样本**内测量"这些真实值覆盖了该范围的多少比例",并且**只有当列出的每个字段
+都达到 `min_ratio` 时,这个包才会被计入 history**。这样可以防止单个源/目标触发一条覆盖大范围的规则:
+两台主机互发包保持安静,而无数个不同主机打向一个目标(地毯式),或一个源喷向无数目标,就会作为攻击被收录。
+
+```yaml
+aggregate: { proto: exact, src: "/0", dst: "/24", src_port: all, dst_port: exact }
+ratio_detection:
+  - name: dst          # src | dst | src_port | dst_port —— 必须是被聚合的字段
+    min_ratio: 30      # 百分比(1-100)
+```
+
+精度最高 5%(20 个桶)。范围小(如 15 个端口的窗口)就一个值一个桶,占比是精确的;范围大(IP `/0`、
+`/24`、或 `src_port all`)则封顶 20 个桶、对值做哈希。被命名的字段**必须是被聚合的**(全主机 `/32`·`/128`
+或 `exact` 端口没有范围,加载时会报错);IP 字段还要求设置 `match.family`。没列出的字段不计算、零开销。
+内置 `*-subnet` 规则用了 `ratio_detection: [{ name: dst, min_ratio: 30 }]`,要求地毯式攻击真正铺满
+/24·/48。`/status` 会报出每个实例当前的 `spread` 百分比。
+
 #### history —— 每实例的环形缓冲
 
 每个实例最多维护三个固定容量环。`fine` 必填（秒级触发）；`medium`/`coarse` 是可选的更粗 rollup,

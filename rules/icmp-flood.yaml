@@ -1,56 +1,98 @@
 # Predefined: ICMP flood (ping flood) aimed at a victim. Identity is the VICTIM
-# (dst) plus the ICMP *type* (code wildcarded), so the emitted rule drops only the
-# flooding type — e.g. echo-request — and leaves other control types intact. This
-# matters most for ICMPv6, where blanket-dropping ICMP to a host would also kill
-# Neighbor Discovery (NS/NA/RS/RA, types 133-137) and break IPv6 connectivity.
+# plus the ICMP *type* (code wildcarded), so the emitted rule drops only the
+# flooding type and leaves other control types intact. This matters most for
+# ICMPv6, where blanket-dropping ICMP to a host would also kill Neighbor Discovery
+# (NS/NA/RS/RA, types 133-137) and break IPv6 connectivity.
 #
-# So there is deliberately NO host-wide ICMPv6 emergency rule. For IPv4 (no NDP)
-# a host-wide emergency is included. max_instances: per-type -> 50, emergency -> 30.
+# Burst detection: fire on a pps SPIKE above the (victim, type) baseline AND above a
+# floor. There is deliberately NO subnet/host-wide all-types ICMPv6 rule. For IPv4
+# (no NDP) a host-wide ABSOLUTE emergency backstop is included.
 rules:
   - name: icmp-flood-ipv4
     match: { family: ipv4, proto: icmp }
     aggregate: { proto: exact, src: "/0", dst: "/32", icmp_type: exact, icmp_code: all }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct sources
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 50
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 20000"     # 20 k ICMP/s of one type to one victim
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 10000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "icmp type {{icmp_type}} flood to {{dst}}, pps={{pps}}"
 
   - name: icmp-flood-ipv6
     match: { family: ipv6, proto: icmpv6 }
-    # Per-type identity keeps NDP (types 133-137) alive during an echo flood.
     aggregate: { proto: exact, src: "/0", dst: "/128", icmp_type: exact, icmp_code: all }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 50
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 20000"     # 20 k ICMPv6/s of one type to one victim
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 10000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "icmpv6 type {{icmp_type}} flood to {{dst}}, pps={{pps}}"
 
+  # --- Per SUBNET + type (carpet bomb): NDP types still survive (identity keeps
+  # the type). ---
+  - name: icmp-flood-subnet-ipv4
+    match: { family: ipv4, proto: icmp }
+    aggregate: { proto: exact, src: "/0", dst: "/24", icmp_type: exact, icmp_code: all }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]   # require the flood to spread across the /24
+    rank: pps
+    history:
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
+      max_instances: 30
+    trigger:
+      terms:
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 30000"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "carpet icmp type {{icmp_type}} flood on {{dst}}, pps={{pps}}"
+
+  - name: icmp-flood-subnet-ipv6
+    match: { family: ipv6, proto: icmpv6 }
+    aggregate: { proto: exact, src: "/0", dst: "/48", icmp_type: exact, icmp_code: all }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]
+    rank: pps
+    history:
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
+      max_instances: 30
+    trigger:
+      terms:
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 30000"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "carpet icmpv6 type {{icmp_type}} flood on {{dst}}, pps={{pps}}"
+
   # IPv4 only: blanket-drop all ICMP to a victim under an extreme multi-type flood.
-  # (No IPv6 counterpart — it would break Neighbor Discovery.)
+  # ABSOLUTE backstop. (No IPv6 counterpart — it would break Neighbor Discovery.)
   - name: icmp-flood-host-ipv4
     match: { family: ipv4, proto: icmp }
     aggregate: { proto: exact, src: "/0", dst: "/32", icmp_type: all, icmp_code: all }
     rank: pps
-    history:
-      fine: { resolution: 1s, duration: 10m }
-      max_instances: 30
+    history: { fine: { resolution: 1s, duration: 10m }, max_instances: 30 }
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
-      sustained: 10s
+      expr: "pps > 50000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 180s, refresh: true }
     description: "host-wide icmp flood to {{dst}}, pps={{pps}}"

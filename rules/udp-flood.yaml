@@ -1,91 +1,162 @@
-# Predefined: UDP direct flood mitigations, victim-side (identity = dst host).
-# These are NOT reflection rules (reflection keys on the source service port —
-# see udp-reflection.yaml). Per-destination-port is the safe default; host-wide is
-# emergency-only. max_instances follows fineness: per-port -> 100, host-wide -> 30.
+# Predefined: UDP direct flood mitigations, victim-side. NOT reflection (that keys
+# on the source service port — see udp-reflection.yaml).
+#
+# Burst detection: instead of a bare absolute threshold (which would also drop a
+# legitimately busy service — a tracker, resolver, game/STUN/QUIC endpoint — that
+# steadily does tens of kpps to one dst:port), these fire only when traffic SPIKES
+# well above that descriptor's own recent baseline AND clears an absolute floor:
+#   pps > 5 * pps_base  and  pps > floor      (and the same for bps)
+# A steady service has pps ~= pps_base, so the ratio is never met. A real flood is a
+# sharp departure from baseline. The floor still catches an attack on a previously
+# quiet victim (where the baseline is ~0).
+#
+# Note: the baseline (medium ring, 5m) needs ~6 min to warm up; before that only the
+# floor applies, so the floor is set above a typical busy service. Persist across
+# restarts with detector.state_file so warm-up is a one-time event. For a service
+# that exceeds the floor, exempt it with a rules_dir copy scoped by match.dst/port.
+#
+# Scopes: per host (dst /32//128, pool 100) and per subnet (dst /24//48, pool 30).
 rules:
-  # --- UDP flood, per destination port: fires on either high packet rate OR high
-  # bandwidth, so it catches both packet-stress and amplification-volume floods. ---
+  # --- UDP flood, per destination port (pps spike OR bps spike) ---
   - name: udp-flood-ipv4
     match: { family: ipv4, proto: udp }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct sources
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        pps:  { metric: pps, window: 10s }
-        rate: { metric: bps, window: 10s }
-      expr: "pps > 100000 or rate > 1000000000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "(pps > 5 * pps_base and pps > 50000) or (bps > 5 * bps_base and bps > 100000000)"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{rate}}"
+    description: "udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{bps}}"
 
   - name: udp-flood-ipv6
     match: { family: ipv6, proto: udp }
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        pps:  { metric: pps, window: 10s }
-        rate: { metric: bps, window: 10s }
-      expr: "pps > 100000 or rate > 1000000000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "(pps > 5 * pps_base and pps > 50000) or (bps > 5 * bps_base and bps > 100000000)"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{rate}}"
+    description: "udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{bps}}"
 
-  # --- Small-packet UDP flood (packet-processing stress). packet_len is detection
-  # only (FlowSpec cannot carry it), so mitigation is still per dst-port. ---
+  # --- UDP flood, per SUBNET + destination port (carpet bomb) ---
+  - name: udp-flood-subnet-ipv4
+    match: { family: ipv4, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/24", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]   # require the flood to spread across the /24
+    rank: pps
+    history:
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
+      max_instances: 30
+    trigger:
+      terms:
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "(pps > 5 * pps_base and pps > 80000) or (bps > 5 * bps_base and bps > 50000000)"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "carpet udp flood on {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{bps}}"
+
+  - name: udp-flood-subnet-ipv6
+    match: { family: ipv6, proto: udp }
+    aggregate: { proto: exact, src: "/0", dst: "/48", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]
+    rank: pps
+    history:
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
+      max_instances: 30
+    trigger:
+      terms:
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "(pps > 5 * pps_base and pps > 80000) or (bps > 5 * bps_base and bps > 50000000)"
+      sustained: 5s
+    flowspec: { action: drop, ttl: 300s, refresh: true }
+    description: "carpet udp flood on {{dst}} dport={{dst_port}}, pps={{pps}}, bps={{bps}}"
+
+  # --- Small-packet UDP flood (packet-processing stress). ---
   - name: udp-small-flood-ipv4
     match: { family: ipv4, proto: udp, packet_len: { lt: 200 } }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct sources
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 150000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 80000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "small-packet udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
 
   - name: udp-small-flood-ipv6
     match: { family: ipv6, proto: udp, packet_len: { lt: 200 } }
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 150000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 80000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "small-packet udp flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
 
   # --- Common exposed-service destination floods (DNS, NTP, QUIC/443, IKE, OpenVPN,
-  # L2TP, STUN, WireGuard, game). Not reflection: keyed on dst_port. ---
+  # L2TP, STUN, WireGuard, game) — exactly the services that run hot, so the spike
+  # test matters most here. ---
   - name: udp-service-flood-ipv4
     match:
       family: ipv4
       proto: udp
       dst_port: [53, 123, 443, 500, 4500, 1194, 1701, 3478, 51820, 27015]
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct sources
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 50000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "udp service flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
 
@@ -95,31 +166,33 @@ rules:
       proto: udp
       dst_port: [53, 123, 443, 500, 4500, 1194, 1701, 3478, 51820, 27015]
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 100
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 50000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "udp service flood to {{dst}} dport={{dst_port}}, pps={{pps}}"
 
-  # --- UDP flood, host-wide emergency (drops all UDP to the victim) ---
+  # --- UDP flood, host-wide emergency. ABSOLUTE (no baseline): a catch-all backstop
+  # for an extreme flood, incl. during baseline warm-up. High floor. ---
   - name: udp-flood-host-ipv4
     match: { family: ipv4, proto: udp }
     aggregate: { proto: exact, src: "/0", dst: "/32", src_port: all, dst_port: all }
     rank: pps
-    history:
-      fine: { resolution: 1s, duration: 10m }
-      max_instances: 30
+    history: { fine: { resolution: 1s, duration: 10m }, max_instances: 30 }
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 500000"
-      sustained: 10s
+      expr: "pps > 300000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 180s, refresh: true }
     description: "host-wide udp flood to {{dst}}, pps={{pps}}"
 
@@ -127,13 +200,11 @@ rules:
     match: { family: ipv6, proto: udp }
     aggregate: { proto: exact, src: "/0", dst: "/128", src_port: all, dst_port: all }
     rank: pps
-    history:
-      fine: { resolution: 1s, duration: 10m }
-      max_instances: 30
+    history: { fine: { resolution: 1s, duration: 10m }, max_instances: 30 }
     trigger:
       terms:
         pps: { metric: pps, window: 10s }
-      expr: "pps > 500000"
-      sustained: 10s
+      expr: "pps > 300000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 180s, refresh: true }
     description: "host-wide udp flood to {{dst}}, pps={{pps}}"

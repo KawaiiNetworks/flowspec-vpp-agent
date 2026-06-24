@@ -169,6 +169,12 @@ func compileRule(cfg RuleConfig) (*Rule, error) {
 		return nil, fmt.Errorf("non-wildcard src_port/dst_port cannot be combined with aggregate.proto: all")
 	}
 
+	// --- optional diversity (ratio) gates ---
+	r.spreadFields, err = compileRatio(cfg.RatioDetection, r, famSet, fam)
+	if err != nil {
+		return nil, err
+	}
+
 	// --- history ---
 	hist, err := compileHistory(cfg.History)
 	if err != nil {
@@ -764,6 +770,91 @@ func compileAction(c FlowSpecConfig) (flowSpecAction, error) {
 		return flowSpecAction{}, fmt.Errorf("flowspec.icmp_code: %w", err)
 	}
 	return a, nil
+}
+
+// compileRatio resolves the optional ratio_detection list into diversity gates.
+// Each named field must be aggregated (have a range > 1) so there is diversity to
+// measure; its declared range sets the bucket count (capped at spreadMaxBuckets).
+func compileRatio(items []RatioItem, r *Rule, famSet bool, fam flowspec.Family) ([]spreadField, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	out := make([]spreadField, 0, len(items))
+	for _, it := range items {
+		if it.MinRatio < 1 || it.MinRatio > 100 {
+			return nil, fmt.Errorf("ratio_detection %q: min_ratio must be 1-100", it.Name)
+		}
+		var f spreadField
+		f.minRatio = it.MinRatio
+		f.ipv6 = fam == flowspec.FamilyIPv6
+		var err error
+		switch strings.ToLower(strings.TrimSpace(it.Name)) {
+		case "src":
+			f.kind, f.maskBits = spreadSrc, r.srcMaskBits
+			f.buckets, err = ipBuckets(r.srcMaskBits, famSet, fam, "src")
+		case "dst":
+			f.kind, f.maskBits = spreadDst, r.dstMaskBits
+			f.buckets, err = ipBuckets(r.dstMaskBits, famSet, fam, "dst")
+		case "src_port":
+			f.kind = spreadSrcPort
+			f.portLo, f.portSize, f.portMod, f.buckets, err = portSpread(r.srcPortAgg, "src_port")
+		case "dst_port":
+			f.kind = spreadDstPort
+			f.portLo, f.portSize, f.portMod, f.buckets, err = portSpread(r.dstPortAgg, "dst_port")
+		default:
+			return nil, fmt.Errorf("ratio_detection: unknown field %q (want src|dst|src_port|dst_port)", it.Name)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("ratio_detection: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// ipBuckets sizes the spread buckets for an aggregated address field. A full-host
+// field (or an unknown family) is rejected: there is no range to spread across.
+func ipBuckets(maskBits int, famSet bool, fam flowspec.Family, field string) (int, error) {
+	if !famSet {
+		return 0, fmt.Errorf("%s requires match.family to be set", field)
+	}
+	host := 32
+	if fam == flowspec.FamilyIPv6 {
+		host = 128
+	}
+	if maskBits < 0 || maskBits >= host {
+		return 0, fmt.Errorf("%s must be aggregated (a coarser prefix than full-host) to measure spread", field)
+	}
+	spreadBits := host - maskBits
+	if spreadBits >= 5 { // 2^5 = 32 already exceeds the cap
+		return spreadMaxBuckets, nil
+	}
+	return 1 << spreadBits, nil
+}
+
+// portSpread resolves an aggregated port field into its spread parameters: the
+// range start, range size, whether the value is taken modulo the size (a floor
+// bucket, where the per-instance base divides out), and the bucket count. An exact
+// port has no range and is rejected.
+func portSpread(p portAgg, field string) (lo, size uint32, mod bool, n int, err error) {
+	switch p.mode {
+	case portAll:
+		lo, size = 0, 65536
+	case portRange:
+		lo, size = uint32(p.lo), uint32(p.hi)-uint32(p.lo)+1
+	case portBucket:
+		size, mod = p.step, true
+	default: // portExact
+		return 0, 0, false, 0, fmt.Errorf("%s must be aggregated (not exact) to measure spread", field)
+	}
+	if size < 2 {
+		return 0, 0, false, 0, fmt.Errorf("%s has no range to spread across", field)
+	}
+	n = int(size)
+	if n > spreadMaxBuckets {
+		n = spreadMaxBuckets
+	}
+	return lo, size, mod, n, nil
 }
 
 // aggICMP parses an ICMP type/code aggregate: "exact" (default) keeps the concrete

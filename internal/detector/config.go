@@ -34,6 +34,20 @@ type RuleConfig struct {
 	// half-life. Use it so a bps rule (e.g. reflection) keeps the heaviest victims
 	// by bytes, not packets.
 	Rank string `yaml:"rank"`
+	// RatioDetection is an optional per-field diversity gate. For an aggregated
+	// field (one collapsed to a range, e.g. dst "/24" or src_port "all") it measures
+	// what fraction of that range the observed packets actually cover; a packet is
+	// only counted toward history when every listed field meets its min_ratio. This
+	// keeps a single source/target from tripping a wide-range rule. Omitted fields
+	// are not computed (no cost).
+	RatioDetection []RatioItem `yaml:"ratio_detection"`
+}
+
+// RatioItem is one diversity gate: a descriptor field name (src|dst|src_port|
+// dst_port) that must be aggregated, and the minimum spread percentage (1-100).
+type RatioItem struct {
+	Name     string `yaml:"name"`
+	MinRatio int    `yaml:"min_ratio"`
 }
 
 // MatchConfig is the packet filter. All fields are optional; an absent field

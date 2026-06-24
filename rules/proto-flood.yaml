@@ -1,64 +1,77 @@
 # Predefined: non-TCP/UDP transport floods aimed at a victim. Identity is the
-# VICTIM (dst); the whole protocol is dropped to that host, so these are coarse and
-# carry a small instance pool (max_instances: 20). GRE is ranked/triggered on
-# packet rate, ESP (IPsec, large packets) on bandwidth.
+# VICTIM (dst); the whole protocol is dropped to that host. Burst detection: fire
+# on a SPIKE above the victim's own baseline AND above a floor, so a steady GRE/ESP
+# tunnel (a VPN concentrator carries constant ESP) is not dropped. GRE is triggered
+# on packet rate, ESP (IPsec, large packets) on bandwidth. Small pool (20).
 rules:
   - name: gre-flood-ipv4
     match: { family: ipv4, proto: "47" }
     aggregate: { proto: exact, src: "/0", dst: "/32" }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct sources
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 20
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 50000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "gre flood to {{dst}}, pps={{pps}}"
 
   - name: gre-flood-ipv6
     match: { family: ipv6, proto: "47" }
     aggregate: { proto: exact, src: "/0", dst: "/128" }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
     rank: pps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 20
     trigger:
       terms:
-        pps: { metric: pps, window: 10s }
-      expr: "pps > 100000"
-      sustained: 10s
+        pps:      { metric: pps, window: 10s }
+        pps_base: { metric: pps, window: 5m, offset: 1m }
+      expr: "pps > 5 * pps_base and pps > 50000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
     description: "gre flood to {{dst}}, pps={{pps}}"
 
   - name: esp-flood-ipv4
     match: { family: ipv4, proto: "50" }
     aggregate: { proto: exact, src: "/0", dst: "/32" }
-    rank: rate
+    ratio_detection: [ { name: src, min_ratio: 30 } ]   # require many distinct sources
+    rank: bps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 20
     trigger:
       terms:
-        rate: { metric: bps, window: 10s }
-      expr: "rate > 1000000000"
-      sustained: 10s
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 500000000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "esp bandwidth flood to {{dst}}, bps={{rate}}"
+    description: "esp bandwidth flood to {{dst}}, bps={{bps}}"
 
   - name: esp-flood-ipv6
     match: { family: ipv6, proto: "50" }
     aggregate: { proto: exact, src: "/0", dst: "/128" }
-    rank: rate
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
+    rank: bps
     history:
-      fine: { resolution: 1s, duration: 10m }
+      fine:   { resolution: 1s, duration: 10m }
+      medium: { resolution: 1m, duration: 1h }
       max_instances: 20
     trigger:
       terms:
-        rate: { metric: bps, window: 10s }
-      expr: "rate > 1000000000"
-      sustained: 10s
+        bps:      { metric: bps, window: 10s }
+        bps_base: { metric: bps, window: 5m, offset: 1m }
+      expr: "bps > 5 * bps_base and bps > 500000000"
+      sustained: 5s
     flowspec: { action: drop, ttl: 300s, refresh: true }
-    description: "esp bandwidth flood to {{dst}}, bps={{rate}}"
+    description: "esp bandwidth flood to {{dst}}, bps={{bps}}"

@@ -43,6 +43,10 @@ type Rule struct {
 	icmpTypeAggAll bool // aggregate.icmp_type: all -> type wildcarded out of identity
 	icmpCodeAggAll bool // aggregate.icmp_code: all
 
+	// spreadFields are optional per-field diversity gates (ratio_detection): a packet
+	// is added to history only when every field's observed spread meets its minimum.
+	spreadFields []spreadField
+
 	// trigger
 	terms     []*term
 	expr      *vm.Program
@@ -130,8 +134,34 @@ func (r *Rule) Observe(s Sample) {
 	if !ok {
 		return
 	}
+	// Diversity gate: update every spread estimator, then only fold this packet into
+	// the history rings when every gated field meets its minimum spread. A low-
+	// diversity flow (one source/target) thus never triggers a wide-range rule.
+	if len(r.spreadFields) > 0 && !r.spreadOK(inst, s) {
+		inst.lastSeen = s.At
+		inst.lastIngressIf = s.IngressIf
+		return
+	}
 	inst.add(s.At, s.PacketLen, weight)
 	inst.lastIngressIf = s.IngressIf
+}
+
+// spreadOK updates the instance's per-field diversity estimators with this sample
+// and reports whether all of them currently meet their minimum ratio.
+func (r *Rule) spreadOK(inst *instance, s Sample) bool {
+	if inst.spread == nil {
+		inst.spread = make([]spreadEstimator, len(r.spreadFields))
+		for i, f := range r.spreadFields {
+			inst.spread[i] = newSpreadEstimator(f.buckets)
+		}
+	}
+	ok := true
+	for i, f := range r.spreadFields {
+		if inst.spread[i].observe(f.bucket(s)) < f.minRatio {
+			ok = false // keep updating the rest, but the gate fails
+		}
+	}
+	return ok
 }
 
 // Tick evaluates every instance of this rule at time now and returns the events

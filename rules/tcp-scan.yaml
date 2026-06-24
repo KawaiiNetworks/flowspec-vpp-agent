@@ -16,6 +16,7 @@ rules:
       dst_port: [22, 23, 139, 445, 1433, 2323, 3306, 3389, 5432, 5900, 6379, 9200, 11211]
       tcp_flags: "syn !ack"
     aggregate: { proto: exact, src: "/32", dst: "/0", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]   # require the source to spray many distinct targets
     rank: rate
     history:
       fine: { resolution: 1s, duration: 10m }
@@ -23,8 +24,8 @@ rules:
     trigger:
       terms:
         rate: { metric: pps, window: 30s }
-      expr: "rate > 1000"
-      sustained: 30s
+      expr: "rate > 10000"
+      sustained: 20s
     flowspec: { action: drop, ttl: 600s, refresh: true }
     description: "tcp scan/new-conn surge from {{src}} dport={{dst_port}}, attempts/s={{rate}}"
 
@@ -35,6 +36,7 @@ rules:
       dst_port: [22, 23, 139, 445, 1433, 2323, 3306, 3389, 5432, 5900, 6379, 9200, 11211]
       tcp_flags: "syn !ack"
     aggregate: { proto: exact, src: "/128", dst: "/0", src_port: all, dst_port: exact }
+    ratio_detection: [ { name: dst, min_ratio: 30 } ]
     rank: rate
     history:
       fine: { resolution: 1s, duration: 10m }
@@ -42,7 +44,7 @@ rules:
     trigger:
       terms:
         rate: { metric: pps, window: 30s }
-      expr: "rate > 1000"
-      sustained: 30s
+      expr: "rate > 10000"
+      sustained: 20s
     flowspec: { action: drop, ttl: 600s, refresh: true }
     description: "tcp scan/new-conn surge from {{src}} dport={{dst_port}}, attempts/s={{rate}}"

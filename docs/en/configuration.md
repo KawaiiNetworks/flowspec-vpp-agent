@@ -315,6 +315,32 @@ ICMPv6 type (e.g. echo-request, 128) is dropped without blocking Neighbor Discov
 `icmp_type: all` / `icmp_code: all` to wildcard a field (drop all ICMP to the
 victim). The built-in `icmp-flood-*` rules use `icmp_type: exact, icmp_code: all`.
 
+#### ratio_detection — diversity gate (optional)
+
+A field that is **aggregated** (collapsed to a range — `dst "/24"`, `src_port all`,
+…) still carries the real per-packet values. `ratio_detection` measures, over a
+most recent samples, what fraction of that range the traffic actually covers, and **only
+counts a packet toward history when every listed field meets its `min_ratio`**.
+This stops a single source/target from tripping a wide-range rule: two hosts
+exchanging packets stay quiet, while many distinct hosts hitting one target (a
+carpet bomb) — or one source spraying many — is admitted as the attack it is.
+
+```yaml
+aggregate: { proto: exact, src: "/0", dst: "/24", src_port: all, dst_port: exact }
+ratio_detection:
+  - name: dst          # src | dst | src_port | dst_port — must be an AGGREGATED field
+    min_ratio: 30      # percent (1-100)
+```
+
+Resolution is at most 5% (20 buckets). A small declared range (e.g. a 15-port
+window) uses one bucket per value, so the ratio is exact; a large range (an IP
+`/0`, `/24`, or `src_port all`) is capped at 20 buckets and values are hashed. The
+named field **must be aggregated** (a full-host `/32`·`/128` or an `exact` port has
+no range and is rejected at load); IP fields also require `match.family` to be set.
+Omitted fields cost nothing — they are not computed. The built-in `*-subnet` rules
+use `ratio_detection: [{ name: dst, min_ratio: 30 }]` so a carpet must genuinely
+spread across the /24·/48. `/status` reports each instance's live `spread` percent.
+
 #### history — the per-instance rings
 
 Each instance keeps up to three fixed-capacity ring buffers. `fine` is required
