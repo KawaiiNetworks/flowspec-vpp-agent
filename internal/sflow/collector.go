@@ -51,9 +51,16 @@ func (c *Collector) Run(ctx context.Context) error {
 	}
 	pc := c.pc
 	defer pc.Close()
+	// The watcher closes the socket on cancellation to unblock ReadFrom; done
+	// makes it exit if Run returns for any other reason, so it never leaks.
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-ctx.Done()
-		_ = pc.Close()
+		select {
+		case <-ctx.Done():
+			_ = pc.Close()
+		case <-done:
+		}
 	}()
 
 	buf := make([]byte, 65535)

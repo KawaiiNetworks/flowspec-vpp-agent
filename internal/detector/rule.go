@@ -60,6 +60,11 @@ type Rule struct {
 	history historySpec
 	store   *instanceStore
 
+	// evalEnv is a reusable scratch env for expr evaluation, refilled per instance
+	// on Tick. The engine runs single-goroutine, so sharing one map is safe and
+	// avoids allocating a fresh map per instance per tick.
+	evalEnv map[string]any
+
 	// admission: a HeavyKeeper sketch observes every matched descriptor and ranks
 	// candidates so the bounded instance pool tracks the heaviest targets. rankBytes
 	// weights the sketch by bytes (bps rank) rather than packets. The sketch ages by
@@ -282,12 +287,16 @@ func (r *Rule) descriptorFor(s Sample) descriptor {
 }
 
 func (r *Rule) evalInstance(inst *instance, now time.Time, ctx EvalContext) (*Event, bool) {
-	values := make(map[string]float64, len(r.terms))
-	env := make(map[string]any, len(r.terms))
+	// Refill the shared scratch env (every term key is overwritten, so no clear is
+	// needed) and run the trigger. This is the per-instance-per-tick hot path, so
+	// it must not allocate: the float-valued `values` map is built lazily below,
+	// only once we know the instance will emit.
+	if r.evalEnv == nil {
+		r.evalEnv = make(map[string]any, len(r.terms))
+	}
+	env := r.evalEnv
 	for _, t := range r.terms {
-		v := r.termValue(t, inst, now, ctx)
-		values[t.name] = v
-		env[t.name] = v
+		env[t.name] = r.termValue(t, inst, now, ctx)
 	}
 	res, err := expr.Run(r.expr, env)
 	if err != nil {
@@ -310,6 +319,11 @@ func (r *Rule) evalInstance(inst *instance, now time.Time, ctx EvalContext) (*Ev
 	rule, err := r.buildFlowSpec(inst.key)
 	if err != nil {
 		return nil, false
+	}
+	// Emitting: now materialize the term values for the description and ObservedPPS.
+	values := make(map[string]float64, len(r.terms))
+	for _, t := range r.terms {
+		values[t.name] = env[t.name].(float64)
 	}
 	keyStr := r.descriptorString(inst.key)
 	ev := &Event{

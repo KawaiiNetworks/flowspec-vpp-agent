@@ -73,12 +73,12 @@ func (s *Server) handlePath(path *api.Path) {
 		op = OpWithdraw
 	}
 
-	s.updates <- Update{
+	s.send(Update{
 		Session: SessionID(session),
 		Op:      op,
 		Rule:    rule,
 		Peer:    session,
-	}
+	})
 }
 
 func (s *Server) handlePeerEvent(pe *api.WatchEventResponse_PeerEvent) {
@@ -98,5 +98,5 @@ func (s *Server) handlePeerEvent(pe *api.WatchEventResponse_PeerEvent) {
 	// rules (§17). The manager handles this idempotently.
 	s.log.Info("session not established, withdrawing its rules", "peer", addr,
 		"state", peer.GetState().GetSessionState().String())
-	s.updates <- Update{Session: SessionID(addr), Op: OpSessionDown, Peer: addr}
+	s.send(Update{Session: SessionID(addr), Op: OpSessionDown, Peer: addr})
 }

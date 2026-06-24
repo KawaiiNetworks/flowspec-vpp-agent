@@ -90,8 +90,13 @@ func (h *heavyKeeper) add(key uint64, weight float64) {
 			// decay^(-count). Heavy occupants (large count) almost never decay.
 			if h.decayHits(b.count) {
 				b.count -= weight
-				if b.count <= 0 {
+				switch {
+				case b.count < 0:
 					b.fp, b.count = key, -b.count // intruder takes over with its residual
+				case b.count == 0:
+					// Incumbent drained to exactly zero: free the slot instead of
+					// leaving a {fp:key, count:0} ghost that decayAll would skip.
+					*b = hkBucket{}
 				}
 			}
 		}

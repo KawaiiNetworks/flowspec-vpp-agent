@@ -124,12 +124,18 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		}
 		defer bgpSrv.Stop()
 
+		// bgpSrv.Updates() is never closed; this forwarder stops on ctx instead.
 		go func() {
-			for u := range bgpSrv.Updates() {
+			for {
 				select {
-				case updates <- u:
 				case <-ctx.Done():
 					return
+				case u := <-bgpSrv.Updates():
+					select {
+					case updates <- u:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		}()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	api "github.com/osrg/gobgp/v3/api"
 	"github.com/osrg/gobgp/v3/pkg/server"
@@ -38,6 +39,13 @@ type Server struct {
 	log     *slog.Logger
 	bgp     *server.BgpServer
 	updates chan Update
+	// stopCh is closed by Stop to release any watch callback currently blocked
+	// delivering an update. GoBGP runs watch callbacks on its own goroutine, so
+	// this is what lets Stop return without (a) deadlocking against a blocked
+	// send and (b) racing a send against a closed channel — updates is never
+	// closed; the consumer stops on its own context instead.
+	stopCh   chan struct{}
+	stopOnce sync.Once
 	// receivePeers is the set of peer addresses whose inbound FlowSpec we apply
 	// to VPP. adj-rib-in is watched pre-policy, so this gates handlePath directly.
 	receivePeers map[string]bool
@@ -58,12 +66,27 @@ func New(opts Options, logger *slog.Logger) *Server {
 		opts:         opts,
 		log:          logger,
 		updates:      make(chan Update, 1024),
+		stopCh:       make(chan struct{}),
 		receivePeers: receivePeers,
 	}
 }
 
-// Updates returns the channel of FlowSpec events. The manager consumes it.
+// Updates returns the channel of FlowSpec events. The consumer reads it until
+// its own context is cancelled; the channel is never closed (see Stop).
 func (s *Server) Updates() <-chan Update { return s.updates }
+
+// send delivers u to the updates channel. It blocks until the consumer accepts
+// the update — FlowSpec must not be silently dropped, since a dropped announce
+// is an unmitigated attack — or until Stop is called, whichever comes first.
+// A sustained block here back-pressures GoBGP's event dispatch by design: if the
+// consumer is wedged (e.g. VPP unreachable) no rule can be programmed anyway, so
+// stalling is preferable to discarding rules.
+func (s *Server) send(u Update) {
+	select {
+	case s.updates <- u:
+	case <-s.stopCh:
+	}
+}
 
 // Start brings up the BGP speaker, configures peers and begins watching the
 // FlowSpec adj-rib-in. It returns once the speaker is listening; events arrive
@@ -128,10 +151,15 @@ func (s *Server) addPeer(ctx context.Context, p PeerOptions) error {
 	return s.bgp.AddPeer(ctx, &api.AddPeerRequest{Peer: peer})
 }
 
-// Stop shuts the speaker down and closes the Updates channel.
+// Stop shuts the speaker down. It first closes stopCh to release any watch
+// callback currently blocked in send, then stops GoBGP. Order matters: GoBGP's
+// Stop may wait for in-flight watch callbacks to return, and one of those could
+// be blocked sending on a full updates channel — releasing send first avoids
+// that deadlock. The updates channel is intentionally not closed, since GoBGP
+// may still invoke callbacks while Stop runs.
 func (s *Server) Stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	if s.bgp != nil {
 		s.bgp.Stop()
 	}
-	close(s.updates)
 }

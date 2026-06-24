@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,8 +22,14 @@ const (
 	telegramFlushEvery  = 2 * time.Second // batch window (also rate-limits the Bot API)
 	telegramBatchBytes  = 3500            // flush once a batch reaches this size
 	telegramMaxRunes    = 4000            // per-message cap (Telegram's hard limit is 4096)
-	telegramCloseWait   = 5 * time.Second // bound on flushing remaining lines at shutdown
 	telegramHTTPTimeout = 10 * time.Second
+	// telegramCloseWait must exceed a single POST's timeout so a slow flush at
+	// shutdown can complete rather than being abandoned mid-request.
+	telegramCloseWait = telegramHTTPTimeout + 2*time.Second
+	// 429 backoff: honor the Bot API's retry_after, falling back to a default and
+	// capping so a shutdown drain can't stall for long.
+	telegramDefaultBackoff = 1 * time.Second
+	telegramMaxBackoff     = 5 * time.Second
 )
 
 const defaultTelegramBase = "https://api.telegram.org"
@@ -131,19 +138,54 @@ func (ts *telegramSink) flush(buf *bytes.Buffer) {
 }
 
 func (ts *telegramSink) post(text string) {
+	// Send once; on HTTP 429 back off (honoring retry_after) and retry exactly
+	// once, so transient rate-limiting doesn't silently drop a batch.
+	if backoff := ts.postOnce(text); backoff > 0 {
+		if backoff > telegramMaxBackoff {
+			backoff = telegramMaxBackoff
+		}
+		time.Sleep(backoff)
+		ts.postOnce(text)
+	}
+}
+
+// postOnce sends one request. It returns a positive backoff duration when the
+// Bot API asked us to retry (HTTP 429); 0 means done (success or unretryable).
+func (ts *telegramSink) postOnce(text string) time.Duration {
 	form := url.Values{"chat_id": {ts.chatID}, "text": {text}}
 	resp, err := ts.client.PostForm(ts.apiURL, form)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "telegram log: post failed: %v\n", err)
-		return
+		return 0
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		fmt.Fprintf(os.Stderr, "telegram log: status %d: %s\n", resp.StatusCode, bytes.TrimSpace(body))
-		return
+	if resp.StatusCode == http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return 0
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	fmt.Fprintf(os.Stderr, "telegram log: status %d: %s\n", resp.StatusCode, bytes.TrimSpace(body))
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if d := parseRetryAfter(body); d > 0 {
+			return d
+		}
+		return telegramDefaultBackoff
+	}
+	return 0
+}
+
+// parseRetryAfter extracts parameters.retry_after (seconds) from a Bot API error
+// body, returning 0 if absent or unparseable.
+func parseRetryAfter(body []byte) time.Duration {
+	var r struct {
+		Parameters struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil || r.Parameters.RetryAfter <= 0 {
+		return 0
+	}
+	return time.Duration(r.Parameters.RetryAfter) * time.Second
 }
 
 // Close stops the worker, flushing any buffered lines (bounded by telegramCloseWait).

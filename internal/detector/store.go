@@ -189,10 +189,26 @@ func (r *sampleRing) rate(now time.Time, slots int, metric metricKind) float64 {
 	return float64(packets) / seconds
 }
 
+// admitRescanEvery bounds how often admit() does a full O(N) weakest-instance
+// scan: at most once per this many admission attempts, plus an immediate rescan
+// whenever the cached victim is evicted or has disappeared. Between scans admit
+// reuses the cached victim and only refreshes that victim's estimate (O(1)), so
+// the eviction threshold still tracks sketch decay/collisions.
+const admitRescanEvery = 32
+
 type instanceStore struct {
 	max     int
 	history historySpec
 	items   map[descriptor]*instance
+
+	// cachedVictim is the weakest instance from the last full scan, reused to
+	// avoid rescanning the whole pool on every non-resident packet (the hottest
+	// path under a high-cardinality flood). cachedVictimOK is false when the
+	// cache must be refreshed before use.
+	cachedVictim    descriptor
+	cachedVictimEst float64
+	cachedVictimOK  bool
+	sinceScan       int
 }
 
 func newInstanceStore(history historySpec) *instanceStore {
@@ -221,24 +237,46 @@ func (s *instanceStore) admit(key descriptor, sketch *heavyKeeper, now time.Time
 		s.items[key] = inst
 		return inst, true
 	}
-	victimKey, victimEst, ok := s.weakest(sketch)
+	victimKey, victimEst, ok := s.weakestCached(sketch)
 	if !ok || sketch.estimate(key.hash()) <= victimEst {
 		return nil, false
 	}
 	delete(s.items, victimKey)
+	s.cachedVictimOK = false // evicted the cached victim; force a rescan next time
 	inst := newInstance(key, s.history, now)
 	s.items[key] = inst
 	return inst, true
 }
 
-// weakest returns the tracked instance with the lowest sketch estimate.
-//
-// Performance note: this is O(max_instances), and admit() calls it for every
-// non-resident packet once the pool is full. Under a high-cardinality flood (many
-// distinct sources — e.g. spoofed src) admission therefore degrades toward O(N)
-// per packet. That is fine at sFlow sample rates (hundreds–thousands/s); if it
-// ever becomes hot, sample the eviction (rescan ~1-in-K) or cache the weakest
-// victim between calls rather than rescanning here.
+// weakestCached returns the instance to consider for eviction, reusing the cached
+// victim and doing a full O(N) rescan only periodically (admitRescanEvery) or when
+// the cache is invalid/stale. This is an intentional approximation: between scans
+// the chosen victim may not be the absolute weakest, which only makes admission
+// slightly more conservative — it never overflows the pool nor evicts a heavy
+// instance, since admit still requires the candidate to beat the victim's estimate.
+func (s *instanceStore) weakestCached(sketch *heavyKeeper) (descriptor, float64, bool) {
+	s.sinceScan++
+	switch {
+	case !s.cachedVictimOK, s.sinceScan >= admitRescanEvery:
+		s.refreshVictim(sketch)
+	default:
+		if inst, present := s.items[s.cachedVictim]; !present {
+			s.refreshVictim(sketch)
+		} else {
+			// Keep the eviction threshold current without a full scan.
+			s.cachedVictimEst = sketch.estimate(inst.keyHash)
+		}
+	}
+	return s.cachedVictim, s.cachedVictimEst, s.cachedVictimOK
+}
+
+func (s *instanceStore) refreshVictim(sketch *heavyKeeper) {
+	s.cachedVictim, s.cachedVictimEst, s.cachedVictimOK = s.weakest(sketch)
+	s.sinceScan = 0
+}
+
+// weakest returns the tracked instance with the lowest sketch estimate. It is
+// O(max_instances); callers go through weakestCached to amortize it.
 func (s *instanceStore) weakest(sketch *heavyKeeper) (descriptor, float64, bool) {
 	var victimKey descriptor
 	var min float64

@@ -30,6 +30,14 @@ const (
 	protoTCP    = 6
 	protoUDP    = 17
 	protoICMPv6 = 58
+
+	// IPv6 extension-header Next-Header values we walk over to reach the L4 header.
+	extHopByHop = 0
+	extRouting  = 43
+	extFragment = 44
+	extAH       = 51
+	extDestOpts = 60
+	extMobility = 135
 )
 
 // Decoder extracts compact detector samples from sFlow v5 datagrams.
@@ -283,19 +291,56 @@ func decodeIPv6(b []byte) (detector.Sample, bool) {
 		return detector.Sample{}, false
 	}
 	payloadLen := binary.BigEndian.Uint16(b[4:6])
-	next := b[6]
 	var srcBytes, dstBytes [16]byte
 	copy(srcBytes[:], b[8:24])
 	copy(dstBytes[:], b[24:40])
+	// Walk any IPv6 extension headers so Proto/ports reflect the real L4 header
+	// rather than the first extension header.
+	proto, l4 := skipIPv6ExtHeaders(b[6], b[40:])
 	s := detector.Sample{
 		Family:    flowspec.FamilyIPv6,
 		Src:       netip.AddrFrom16(srcBytes),
 		Dst:       netip.AddrFrom16(dstBytes),
-		Proto:     next,
-		PacketLen: payloadLen + 40,
+		Proto:     proto,
+		PacketLen: clampU16(uint32(payloadLen) + 40),
 	}
-	fillPorts(&s, b[40:])
+	fillPorts(&s, l4)
 	return s, true
+}
+
+// skipIPv6ExtHeaders advances past IPv6 extension headers starting at Next-Header
+// value next over rest, returning the upper-layer protocol number and the bytes
+// at the L4 header. It stops at the first non-extension header (or when it cannot
+// continue, e.g. ESP/encrypted or a truncated header), in which case l4 may be
+// nil and fillPorts simply reads nothing.
+func skipIPv6ExtHeaders(next byte, rest []byte) (proto byte, l4 []byte) {
+	// Each iteration shrinks rest, so this terminates; the cap just bounds work
+	// on a pathological header chain.
+	for i := 0; i < 8; i++ {
+		var hdrLen int
+		switch next {
+		case extHopByHop, extRouting, extDestOpts, extMobility:
+			if len(rest) < 2 {
+				return next, nil
+			}
+			hdrLen = (int(rest[1]) + 1) * 8
+		case extFragment:
+			hdrLen = 8 // fixed length; rest[1] is reserved, not a length field
+		case extAH:
+			if len(rest) < 2 {
+				return next, nil
+			}
+			hdrLen = (int(rest[1]) + 2) * 4 // AH payload length is in 4-octet units
+		default:
+			return next, rest // upper-layer protocol (or unparseable): stop here
+		}
+		if hdrLen <= 0 || len(rest) < hdrLen {
+			return next, nil
+		}
+		next = rest[0]
+		rest = rest[hdrLen:]
+	}
+	return next, rest
 }
 
 func fillPorts(s *detector.Sample, payload []byte) {
