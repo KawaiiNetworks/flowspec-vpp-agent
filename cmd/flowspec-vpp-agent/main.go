@@ -28,6 +28,7 @@ import (
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/logging"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/manager"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/metrics"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/psample"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/sflow"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/version"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/vpp"
@@ -159,18 +160,26 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		samples := make(chan detector.Sample, det.SampleQueue)
 		events := make(chan detector.Event, det.EventQueue)
 
-		collector := sflow.NewCollector(det.SFlow.Listen, samples, dlog)
-		if err := collector.Listen(); err != nil {
-			return fmt.Errorf("listen sFlow: %w", err)
+		// Exactly one sample source is configured (enforced by Validate).
+		var src sampleSource
+		switch det.CollectorMode() {
+		case "psample":
+			src = psample.New(det.Collector.PSample.Group, samples, dlog)
+		default: // "sflow"
+			src = sflow.NewCollector(det.Collector.SFlow.Listen, samples, dlog)
 		}
-		status.setCollector(collector)
+		if err := src.Listen(); err != nil {
+			return fmt.Errorf("listen %s collector: %w", det.CollectorMode(), err)
+		}
+		status.setCollector(src)
 		reg.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
-			Name: "sflow_samples_dropped_total",
-			Help: "sFlow samples dropped because the detector sample queue was full.",
-		}, func() float64 { return float64(collector.Dropped()) }))
+			Name:        "detector_samples_dropped_total",
+			Help:        "Samples dropped because the detector sample queue was full.",
+			ConstLabels: prometheus.Labels{"source": det.CollectorMode()},
+		}, func() float64 { return float64(src.Dropped()) }))
 		go func() {
-			if err := collector.Run(ctx); err != nil {
-				dlog.Error("sFlow collector failed", "error", err)
+			if err := src.Run(ctx); err != nil {
+				dlog.Error("sample collector failed", "error", err)
 				stop()
 			}
 		}()

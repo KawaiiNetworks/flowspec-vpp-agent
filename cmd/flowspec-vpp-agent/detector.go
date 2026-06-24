@@ -182,7 +182,7 @@ func logDetectorConfig(logger *slog.Logger, cfg *config.Detector, rules int) {
 		"rules_enabled", cfg.RulesEnabled,
 		"rules_dir", cfg.RulesDir,
 		"dry_run", cfg.DryRun,
-		"sflow_listen", cfg.SFlow.Listen,
+		"collector", cfg.CollectorMode(),
 		"sample_queue", cfg.SampleQueue,
 		"event_queue", cfg.EventQueue,
 		"vpp_stats", cfg.VPPStatsEnabled(),

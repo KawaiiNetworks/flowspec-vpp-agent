@@ -38,8 +38,11 @@ detector:                            # [opt] sFlow/VPP-stats detector; PRESENCE 
   builtin_rules: true                # [opt] default true; auto-enable every embedded built-in rule
   rules_enabled: []                  # [opt] extra rule names to merge in (e.g. rules_dir rules);
                                      #       set builtin_rules:false + list here to run a subset of built-ins
-  sflow:                             # [opt] sFlow collector
-    listen: "0.0.0.0:6343"           # [opt] default; sFlow v5 UDP host:port
+  collector:                         # sample source: set EXACTLY ONE of sflow / psample
+    sflow:                           # sFlow v5 over UDP (hsflowd or any sFlow agent)
+      listen: "0.0.0.0:6343"         # [opt] default; sFlow v5 UDP host:port
+    # psample:                       # alternative: Linux netlink PSAMPLE (VPP native sflow plugin)
+    #   group: 0                     # [opt] PSAMPLE sample-group to accept (match VPP; 0 = any)
   vpp_stats:                         # [opt] PRESENCE enables VPP counter polling; omit to disable
     interval: 1s                     # [opt] default 1s; 0/omitted -> 1s
     fine:   { resolution: 1s, duration: 5m }   # [opt] history rings (like a rule's history);

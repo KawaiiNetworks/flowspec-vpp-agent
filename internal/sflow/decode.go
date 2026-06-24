@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/detector"
-	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/flowspec"
+	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/packet"
 )
 
 const (
@@ -21,23 +21,6 @@ const (
 	headerEthernetISO8023 = 1
 	headerIPv4            = 11
 	headerIPv6            = 12
-
-	etherTypeIPv4 = 0x0800
-	etherTypeIPv6 = 0x86dd
-	etherTypeVLAN = 0x8100
-
-	protoICMP   = 1
-	protoTCP    = 6
-	protoUDP    = 17
-	protoICMPv6 = 58
-
-	// IPv6 extension-header Next-Header values we walk over to reach the L4 header.
-	extHopByHop = 0
-	extRouting  = 43
-	extFragment = 44
-	extAH       = 51
-	extDestOpts = 60
-	extMobility = 135
 )
 
 // Decoder extracts compact detector samples from sFlow v5 datagrams.
@@ -208,179 +191,30 @@ func decodeRawHeader(data []byte, now time.Time, sampleRate uint32, inputIf stri
 	}
 	header := r.take(int(headerLen))
 	var s detector.Sample
+	var ok2 bool
 	switch headerProtocol {
 	case headerEthernetISO8023:
-		var ok bool
-		s, ok = decodeEthernet(header)
-		if !ok {
-			return detector.Sample{}, false
-		}
+		s, ok2 = packet.DecodeEthernet(header)
 	case headerIPv4:
-		var ok bool
-		s, ok = decodeIPv4(header)
-		if !ok {
-			return detector.Sample{}, false
-		}
+		s, ok2 = packet.DecodeIPv4(header)
 	case headerIPv6:
-		var ok bool
-		s, ok = decodeIPv6(header)
-		if !ok {
-			return detector.Sample{}, false
-		}
+		s, ok2 = packet.DecodeIPv6(header)
 	default:
 		return detector.Sample{}, false
 	}
+	if !ok2 {
+		return detector.Sample{}, false
+	}
 	s.At = now
-	s.PacketLen = clampU16(frameLen)
+	// sFlow carries the original (pre-sampling) frame length explicitly, which is
+	// more accurate than the IP header's length for a truncated header sample.
+	s.PacketLen = packet.ClampU16(frameLen)
 	s.IngressIf = inputIf
 	s.SampleRate = sampleRate
 	if s.SampleRate == 0 {
 		s.SampleRate = 1
 	}
 	return s, true
-}
-
-func decodeEthernet(b []byte) (detector.Sample, bool) {
-	if len(b) < 14 {
-		return detector.Sample{}, false
-	}
-	typ := binary.BigEndian.Uint16(b[12:14])
-	off := 14
-	for typ == etherTypeVLAN {
-		if len(b) < off+4 {
-			return detector.Sample{}, false
-		}
-		typ = binary.BigEndian.Uint16(b[off+2 : off+4])
-		off += 4
-	}
-	switch typ {
-	case etherTypeIPv4:
-		return decodeIPv4(b[off:])
-	case etherTypeIPv6:
-		return decodeIPv6(b[off:])
-	default:
-		return detector.Sample{}, false
-	}
-}
-
-func decodeIPv4(b []byte) (detector.Sample, bool) {
-	if len(b) < 20 || b[0]>>4 != 4 {
-		return detector.Sample{}, false
-	}
-	ihl := int(b[0]&0x0f) * 4
-	if ihl < 20 || len(b) < ihl {
-		return detector.Sample{}, false
-	}
-	totalLen := binary.BigEndian.Uint16(b[2:4])
-	proto := b[9]
-	src := netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
-	dst := netip.AddrFrom4([4]byte{b[16], b[17], b[18], b[19]})
-	s := detector.Sample{
-		Family:    flowspec.FamilyIPv4,
-		Src:       src,
-		Dst:       dst,
-		Proto:     proto,
-		PacketLen: totalLen,
-	}
-	// Only the first fragment (fragment offset 0) carries the L4 header. Reading
-	// ports from a later fragment would parse payload bytes as a TCP/UDP header and
-	// fabricate ports, so skip them for non-initial fragments.
-	if binary.BigEndian.Uint16(b[6:8])&0x1fff == 0 {
-		fillPorts(&s, b[ihl:])
-	}
-	return s, true
-}
-
-func decodeIPv6(b []byte) (detector.Sample, bool) {
-	if len(b) < 40 || b[0]>>4 != 6 {
-		return detector.Sample{}, false
-	}
-	payloadLen := binary.BigEndian.Uint16(b[4:6])
-	var srcBytes, dstBytes [16]byte
-	copy(srcBytes[:], b[8:24])
-	copy(dstBytes[:], b[24:40])
-	// Walk any IPv6 extension headers so Proto/ports reflect the real L4 header
-	// rather than the first extension header.
-	proto, l4 := skipIPv6ExtHeaders(b[6], b[40:])
-	s := detector.Sample{
-		Family:    flowspec.FamilyIPv6,
-		Src:       netip.AddrFrom16(srcBytes),
-		Dst:       netip.AddrFrom16(dstBytes),
-		Proto:     proto,
-		PacketLen: clampU16(uint32(payloadLen) + 40),
-	}
-	fillPorts(&s, l4)
-	return s, true
-}
-
-// skipIPv6ExtHeaders advances past IPv6 extension headers starting at Next-Header
-// value next over rest, returning the upper-layer protocol number and the bytes
-// at the L4 header. It stops at the first non-extension header (or when it cannot
-// continue, e.g. ESP/encrypted or a truncated header), in which case l4 may be
-// nil and fillPorts simply reads nothing.
-func skipIPv6ExtHeaders(next byte, rest []byte) (proto byte, l4 []byte) {
-	// Each iteration shrinks rest, so this terminates; the cap just bounds work
-	// on a pathological header chain.
-	for i := 0; i < 8; i++ {
-		var hdrLen int
-		switch next {
-		case extHopByHop, extRouting, extDestOpts, extMobility:
-			if len(rest) < 2 {
-				return next, nil
-			}
-			hdrLen = (int(rest[1]) + 1) * 8
-		case extFragment:
-			if len(rest) < 8 {
-				return next, nil
-			}
-			// Only the first fragment (offset 0) carries the L4 header. For a later
-			// fragment the real upper-layer protocol is still known (the Fragment
-			// header's Next Header), but there are no ports to read.
-			if binary.BigEndian.Uint16(rest[2:4])>>3 != 0 {
-				return rest[0], nil
-			}
-			hdrLen = 8 // fixed length; rest[1] is reserved, not a length field
-		case extAH:
-			if len(rest) < 2 {
-				return next, nil
-			}
-			hdrLen = (int(rest[1]) + 2) * 4 // AH payload length is in 4-octet units
-		default:
-			return next, rest // upper-layer protocol (or unparseable): stop here
-		}
-		if hdrLen <= 0 || len(rest) < hdrLen {
-			return next, nil
-		}
-		next = rest[0]
-		rest = rest[hdrLen:]
-	}
-	return next, rest
-}
-
-func fillPorts(s *detector.Sample, payload []byte) {
-	switch s.Proto {
-	case protoTCP:
-		if len(payload) < 14 {
-			return
-		}
-		s.SrcPort = binary.BigEndian.Uint16(payload[0:2])
-		s.DstPort = binary.BigEndian.Uint16(payload[2:4])
-		s.TCPFlags = payload[13]
-	case protoUDP:
-		if len(payload) < 4 {
-			return
-		}
-		s.SrcPort = binary.BigEndian.Uint16(payload[0:2])
-		s.DstPort = binary.BigEndian.Uint16(payload[2:4])
-	case protoICMP, protoICMPv6:
-		// ICMP type/code are the first two bytes of the L4 header — the same
-		// offset the port fields would occupy.
-		if len(payload) < 2 {
-			return
-		}
-		s.ICMPType = payload[0]
-		s.ICMPCode = payload[1]
-	}
 }
 
 func readAgent(r *reader) (netip.Addr, bool) {
@@ -413,13 +247,6 @@ func ifIndexName(v uint32) string {
 		return ""
 	}
 	return fmt.Sprintf("ifindex:%d", v&0x3fffffff)
-}
-
-func clampU16(v uint32) uint16 {
-	if v > 0xffff {
-		return 0xffff
-	}
-	return uint16(v)
 }
 
 type reader struct {

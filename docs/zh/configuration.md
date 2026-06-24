@@ -142,9 +142,13 @@ metrics:
 
 ## detector
 
-可选的 sFlow/VPP-stats 检测器。它监听 sFlow v5 UDP 数据包，维护固定容量规则状态，
+可选的采样驱动 / VPP-stats 检测器。它把采样数据包折叠进固定容量规则状态，
 把命中的事件转换成 synthetic FlowSpec 规则走同一条 manager/VPP ACL 路径，并负责 TTL
 刷新与到期撤销。
+
+采样来自一个 collector —— `sflow`（sFlow v5 over UDP，例如 hsflowd）或 `psample`
+（Linux netlink PSAMPLE，由 VPP 原生 sflow plugin 直接喂入，无需 hsflowd 和 UDP 中转）
+**二选一**。`psample` 需要内核 `psample` 模块和一个配置为采样到该通道的 VPP `sflow` plugin。
 
 **检测器由 `detector:` 段的存在来启用** —— 没有 `enabled` 开关。同理，`vpp_stats`
 由 `vpp_stats:` 块的存在来启用；省略对应段即关闭。
@@ -154,8 +158,11 @@ detector:
   rules_dir: /etc/flowspec-vpp-agent/rules
   builtin_rules: true        # 自动启用全部内置规则（默认）
   rules_enabled: []          # 额外合并的规则名（例如 rules_dir 里的）
-  sflow:
-    listen: "0.0.0.0:6343"
+  collector:                 # 采样来源：sflow / psample 二选一
+    sflow:
+      listen: "0.0.0.0:6343"
+    # psample:               # 备选：VPP 原生 sflow plugin，经 netlink
+    #   group: 0             # 接受的 PSAMPLE sample-group（与 VPP 一致；0 = 任意）
   sample_queue: 65536
   event_queue: 1024
   vpp_stats:       # 写了这个块即开启计数器轮询；省略则关闭
@@ -171,7 +178,8 @@ detector:
 | `rules_dir` | string | 空 | 可选的用户规则目录（`*.yaml`）。同名文件覆盖内置规则。 |
 | `builtin_rules` | bool | `true` | 自动启用全部内置规则。最终生效集合 = 内置规则（启用时）∪ `rules_enabled`。 |
 | `rules_enabled` | list | 空 | 额外启用的规则名，与内置规则**合并** —— 启用 `rules_dir` 里的规则就靠它。设 `builtin_rules: false` 时，它改为「从内置规则里挑子集」。名字在内置规则与 `rules_dir` 中解析。`builtin_rules: false` 且此项为空会被拒绝（没规则可跑）。 |
-| `sflow.listen` | string | `0.0.0.0:6343` | sFlow v5 UDP 监听地址。 |
+| `collector.sflow.listen` | string | `0.0.0.0:6343` | sFlow v5 UDP 监听地址（用 `sflow` 源时设置）。 |
+| `collector.psample.group` | int | `0` | 接受的 PSAMPLE sample-group id（`0` = 任意）。与 VPP sflow plugin 采样的 group 一致。 |
 | `sample_queue` | int | `65536` | 有界 sample 队列（`0` → 用默认）；处理不过来时丢采样，不增长内存。 |
 | `event_queue` | int | `1024` | 有界事件队列（`0` → 用默认）。 |
 | `vpp_stats` | block | 无 | 存在 → 轮询 VPP 接口计数器（启用 `vpp.*` 指标）；省略 → 不轮询，且用了 `vpp.*` 的规则会在启动时被拒绝。 |

@@ -65,8 +65,9 @@ detector:
   rules_enabled:
     - udp-reflection-ipv4
     - tcp-scan-ipv4
-  sflow:
-    listen: "127.0.0.1:6343"
+  collector:
+    sflow:
+      listen: "127.0.0.1:6343"
   sample_queue: 1024
   event_queue: 64
   vpp_stats:
@@ -97,6 +98,8 @@ func TestParse_DetectorDefaults(t *testing.T) {
 	cfg, err := Parse([]byte(`
 detector:
   rules_enabled: [udp-reflection-ipv4]
+  collector:
+    sflow: {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -104,8 +107,8 @@ detector:
 	if cfg.Detector.VPPStatsEnabled() {
 		t.Error("vpp_stats should be disabled when omitted")
 	}
-	if cfg.Detector.SFlow.Listen != "0.0.0.0:6343" {
-		t.Errorf("sflow.listen default = %q", cfg.Detector.SFlow.Listen)
+	if cfg.Detector.Collector.SFlow.Listen != "0.0.0.0:6343" {
+		t.Errorf("sflow.listen default = %q", cfg.Detector.Collector.SFlow.Listen)
 	}
 	if cfg.Detector.SampleQueue != 65536 || cfg.Detector.EventQueue != 1024 {
 		t.Errorf("queue defaults = %d/%d", cfg.Detector.SampleQueue, cfg.Detector.EventQueue)
@@ -141,6 +144,8 @@ func TestParse_DetectorOnlyNoBGP(t *testing.T) {
 	cfg, err := Parse([]byte(`
 detector:
   rules_enabled: [udp-reflection-ipv4]
+  collector:
+    sflow: {}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -185,20 +190,22 @@ func TestValidate_Errors(t *testing.T) {
 		"bgp:\n  router_id: 2001:db8::1\n",
 		"metrics:\n  listen: bad-port\n",
 		"detector:\n  builtin_rules: false\n", // builtins off + no rules_enabled => nothing to run
-		"detector:\n  rules_enabled: [x]\n  sflow:\n    listen: bad\n",
-		"detector:\n  rules_enabled: [x]\n  sample_queue: -1\n",
-		"detector:\n  rules_enabled: [x]\n  event_queue: -1\n",
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow:\n      listen: bad\n",            // bad sflow listen
+		"detector:\n  rules_enabled: [x]\n",                                                          // no collector configured
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\n    psample:\n      group: 1\n", // both collectors set
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\n  sample_queue: -1\n",          // bad sample_queue
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\n  event_queue: -1\n",           // bad event_queue
 		"acl:\n  interfaces:\n    mode: bogus\n",
 		"acl:\n  interfaces:\n    mode: list\n", // list mode without list
 		"bgp:\n  peers:\n    - address: notanip\n      peer_asn: 1\n",
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n",                                                             // missing peer_asn
 		"bgp:\n  peers:\n    - address: 1.2.3.4\n      peer_asn: 1\n      receive: false\n      send: false\n", // no-op peer
 		"vpp:\n  socket: /run/vpp/api.sock\n",                                                                  // nothing to do: no peers, no detector
-		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    level: bogus\n",                                 // bad log level
-		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    format: bogus\n",                                // bad log format
-		"detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    scope: [nonsense]\n",                            // unknown scope
-		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    chat_id: c\n",                                 // telegram missing bot_token
-		"detector:\n  rules_enabled: [x]\nlog:\n  telegram:\n    bot_token: t\n",                               // telegram missing chat_id
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\nlog:\n  stderr:\n    level: bogus\n",                                 // bad log level
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\nlog:\n  stderr:\n    format: bogus\n",                                // bad log format
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\nlog:\n  stderr:\n    scope: [nonsense]\n",                            // unknown scope
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\nlog:\n  telegram:\n    chat_id: c\n",                                 // telegram missing bot_token
+		"detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\nlog:\n  telegram:\n    bot_token: t\n",                               // telegram missing chat_id
 	}
 	for _, c := range cases {
 		if _, err := Parse([]byte(c)); err == nil {
@@ -213,6 +220,8 @@ func TestParse_LogSinks(t *testing.T) {
 	cfg, err := Parse([]byte(`
 detector:
   rules_enabled: [udp-flood-ipv4]
+  collector:
+    sflow: {}
 log:
   stderr:
     level: warn
@@ -251,7 +260,7 @@ log:
 
 // Omitting the log block yields the default stderr sink (info/all/text), no telegram.
 func TestParse_LogDefault(t *testing.T) {
-	cfg, err := Parse([]byte("detector:\n  rules_enabled: [x]\n"))
+	cfg, err := Parse([]byte("detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +275,7 @@ func TestParse_LogDefault(t *testing.T) {
 
 // scope: none disables a sink (not "all", empty scope set).
 func TestParse_LogScopeNone(t *testing.T) {
-	cfg, err := Parse([]byte("detector:\n  rules_enabled: [x]\nlog:\n  stderr:\n    scope: none\n"))
+	cfg, err := Parse([]byte("detector:\n  rules_enabled: [x]\n  collector:\n    sflow: {}\nlog:\n  stderr:\n    scope: none\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +289,7 @@ func TestParse_LogScopeNone(t *testing.T) {
 // is honored verbatim.
 func TestLoad_PersistDefault(t *testing.T) {
 	dir := t.TempDir()
-	body := "detector:\n  rules_enabled: [udp-flood-ipv4]\n"
+	body := "detector:\n  rules_enabled: [udp-flood-ipv4]\n  collector:\n    sflow: {}\n"
 
 	def := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(def, []byte(body), 0o600); err != nil {

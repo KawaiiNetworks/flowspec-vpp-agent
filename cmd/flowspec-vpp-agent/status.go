@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync/atomic"
@@ -8,9 +9,18 @@ import (
 
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/detector"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/localrules"
-	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/sflow"
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/vppstats"
 )
+
+// sampleSource is the common shape of the two interchangeable sample collectors
+// (sflow, psample): bind synchronously, run until ctx is cancelled, and report
+// queue-overflow drops. The interface lives here because main and status (same
+// package) are its only consumers.
+type sampleSource interface {
+	Listen() error
+	Run(ctx context.Context) error
+	Dropped() int64
+}
 
 // statusProvider aggregates the live detector state for the JSON /status
 // endpoint. Each source is set once during startup (only when the detector is
@@ -20,14 +30,14 @@ type statusProvider struct {
 	stats     atomic.Pointer[vppstats.Store]
 	runner    atomic.Pointer[detector.Runner]
 	leases    atomic.Pointer[localrules.Controller]
-	collector atomic.Pointer[sflow.Collector]
+	collector atomic.Pointer[sampleSource]
 	started   time.Time // process start, used to average drop rates
 }
 
 func (p *statusProvider) setStats(s *vppstats.Store)         { p.stats.Store(s) }
 func (p *statusProvider) setRunner(r *detector.Runner)       { p.runner.Store(r) }
 func (p *statusProvider) setLeases(c *localrules.Controller) { p.leases.Store(c) }
-func (p *statusProvider) setCollector(c *sflow.Collector)    { p.collector.Store(c) }
+func (p *statusProvider) setCollector(c sampleSource)        { p.collector.Store(&c) }
 
 // statusResponse is the JSON body served at /status: current interface traffic,
 // the per-rule instance state, and the active synthetic FlowSpec leases.
@@ -53,7 +63,7 @@ type dropStats struct {
 func (p *statusProvider) dropSnapshot() dropStats {
 	var d dropStats
 	if c := p.collector.Load(); c != nil {
-		d.Samples = c.Dropped()
+		d.Samples = (*c).Dropped()
 	}
 	if r := p.runner.Load(); r != nil {
 		d.Events = r.DroppedEvents()

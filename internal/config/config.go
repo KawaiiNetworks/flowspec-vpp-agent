@@ -101,14 +101,41 @@ type Detector struct {
 	// how you pick a subset of built-ins. Pointer so omitted defaults to true.
 	BuiltinRules *bool     `yaml:"builtin_rules"`
 	RulesEnabled []string  `yaml:"rules_enabled"` // extra rule names to activate (merged with built-ins)
-	SFlow        SFlow     `yaml:"sflow"`
-	VPPStats     *VPPStats `yaml:"vpp_stats"` // present => poll VPP interface counters
+	Collector    Collector `yaml:"collector"`     // sample source: exactly one of sflow / psample
+	VPPStats     *VPPStats `yaml:"vpp_stats"`     // present => poll VPP interface counters
 	SampleQueue  int       `yaml:"sample_queue"`
 	EventQueue   int       `yaml:"event_queue"`
 }
 
+// Collector selects where the detector gets its samples. Exactly one sub-source
+// must be configured: `sflow` (sFlow-over-UDP) or `psample` (Linux netlink
+// PSAMPLE, fed by VPP's native sflow plugin). Pointers so nil = not configured.
+type Collector struct {
+	SFlow   *SFlow   `yaml:"sflow"`
+	PSample *PSample `yaml:"psample"`
+}
+
 type SFlow struct {
 	Listen string `yaml:"listen"`
+}
+
+// PSample configures the netlink PSAMPLE source. Group filters by PSAMPLE
+// sample-group id (match VPP's sflow plugin group; 0 accepts any).
+type PSample struct {
+	Group uint32 `yaml:"group"`
+}
+
+// CollectorMode reports which sample source is configured (after Validate has
+// ensured exactly one). "" means none.
+func (d *Detector) CollectorMode() string {
+	switch {
+	case d.Collector.SFlow != nil:
+		return "sflow"
+	case d.Collector.PSample != nil:
+		return "psample"
+	default:
+		return ""
+	}
 }
 
 // VPPStats controls VPP interface-counter polling. Its presence enables polling
@@ -272,8 +299,8 @@ func (c *Config) applyDetectorDefaults() {
 	if c.Detector == nil {
 		return
 	}
-	if c.Detector.SFlow.Listen == "" {
-		c.Detector.SFlow.Listen = "0.0.0.0:6343"
+	if c.Detector.Collector.SFlow != nil && c.Detector.Collector.SFlow.Listen == "" {
+		c.Detector.Collector.SFlow.Listen = "0.0.0.0:6343"
 	}
 	if c.Detector.SampleQueue == 0 {
 		c.Detector.SampleQueue = 65536
@@ -378,11 +405,19 @@ func (c Config) Validate() error {
 		if !c.Detector.BuiltinRulesEnabled() && len(c.Detector.RulesEnabled) == 0 {
 			return fmt.Errorf("detector has builtin_rules: false and an empty rules_enabled — no rules to run")
 		}
-		if c.Detector.SFlow.Listen == "" {
-			return fmt.Errorf("detector.sflow.listen must be set")
-		}
-		if err := validateHostPort(c.Detector.SFlow.Listen, "detector.sflow.listen"); err != nil {
-			return err
+		// Exactly one sample source must be configured.
+		switch {
+		case c.Detector.Collector.SFlow != nil && c.Detector.Collector.PSample != nil:
+			return fmt.Errorf("detector.collector: set exactly one of sflow / psample, not both")
+		case c.Detector.Collector.SFlow == nil && c.Detector.Collector.PSample == nil:
+			return fmt.Errorf("detector.collector: one of sflow / psample must be configured")
+		case c.Detector.Collector.SFlow != nil:
+			if c.Detector.Collector.SFlow.Listen == "" {
+				return fmt.Errorf("detector.collector.sflow.listen must be set")
+			}
+			if err := validateHostPort(c.Detector.Collector.SFlow.Listen, "detector.collector.sflow.listen"); err != nil {
+				return err
+			}
 		}
 		if c.Detector.SampleQueue <= 0 {
 			return fmt.Errorf("detector.sample_queue must be > 0")

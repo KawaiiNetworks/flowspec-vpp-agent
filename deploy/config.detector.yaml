@@ -14,8 +14,9 @@ metrics:
 detector:
   # All built-in rules are auto-enabled (builtin_rules defaults to true); no
   # rules_dir, so nothing extra to merge via rules_enabled.
-  sflow:
-    listen: "0.0.0.0:6343"
+  collector:
+    sflow:
+      listen: "0.0.0.0:6343"
   vpp_stats:
     # Presence enables VPP counter polling (so rules can use vpp.* metrics).
     interval: 1s

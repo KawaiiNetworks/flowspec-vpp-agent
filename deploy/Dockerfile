@@ -1,7 +1,7 @@
 # Multi-stage build: static binary (CGO disabled) into a distroless base.
 # VPP is reached purely over the binary API unix socket, so no C deps are needed.
 
-FROM golang:1.24 AS builder
+FROM golang:1.25 AS builder
 WORKDIR /src
 
 # Cache modules first.

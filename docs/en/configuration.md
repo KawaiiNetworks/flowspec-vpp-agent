@@ -167,9 +167,14 @@ trusted address.
 
 ## detector
 
-Optional sFlow/VPP-stats detector. It listens for sFlow v5 datagrams,
-updates fixed-capacity rule state, emits synthetic FlowSpec rules into the same
-manager path as BGP, refreshes active leases, and withdraws them when TTL expires.
+Optional sample-driven / VPP-stats detector. It folds sampled packets into
+fixed-capacity rule state, emits synthetic FlowSpec rules into the same manager
+path as BGP, refreshes active leases, and withdraws them when TTL expires.
+
+Samples come from one collector — **exactly one** of `sflow` (sFlow v5 over UDP,
+e.g. from hsflowd) or `psample` (Linux netlink PSAMPLE, fed directly by VPP's
+native sFlow plugin — no hsflowd or UDP hop). `psample` requires the kernel
+`psample` module and a VPP `sflow` plugin configured to sample into it.
 
 **The detector is enabled by the presence of a `detector:` section** — there is
 no `enabled` flag. Likewise `vpp_stats` is enabled by the presence of a
@@ -180,8 +185,11 @@ detector:
   rules_dir: /etc/flowspec-vpp-agent/rules
   builtin_rules: true        # auto-enable all embedded built-ins (default)
   rules_enabled: []          # extra rules (e.g. from rules_dir) merged on top
-  sflow:
-    listen: "0.0.0.0:6343"
+  collector:                 # set EXACTLY ONE of sflow / psample
+    sflow:
+      listen: "0.0.0.0:6343"
+    # psample:               # alternative: VPP native sflow plugin via netlink
+    #   group: 0             # PSAMPLE sample-group to accept (match VPP; 0 = any)
   sample_queue: 65536
   event_queue: 1024
   vpp_stats:       # presence enables counter polling; omit to disable
@@ -197,7 +205,8 @@ detector:
 | `rules_dir` | string | empty | Optional directory of user rule files (`*.yaml`). Files override built-in rules of the same name. |
 | `builtin_rules` | bool | `true` | Auto-enable every embedded built-in rule. The effective set is the built-ins (when enabled) merged with `rules_enabled`. |
 | `rules_enabled` | list | empty | Extra rule names to activate, merged with the built-ins — this is how you enable a `rules_dir` rule. With `builtin_rules: false` it instead selects a subset of built-ins. Names resolve against the built-ins plus `rules_dir`. With `builtin_rules: false` and an empty list, the config is rejected (nothing to run). |
-| `sflow.listen` | string | `0.0.0.0:6343` | UDP listen address for sFlow v5 datagrams. |
+| `collector.sflow.listen` | string | `0.0.0.0:6343` | UDP listen address for sFlow v5 datagrams. Set when using the `sflow` source. |
+| `collector.psample.group` | int | `0` | PSAMPLE sample-group id to accept (`0` = any). Match the group VPP's sflow plugin samples into. |
 | `sample_queue` | int | `65536` | Bounded sample queue (`0` → default). Full queues drop sampled packets instead of growing memory. |
 | `event_queue` | int | `1024` | Bounded detector-event queue (`0` → default). |
 | `vpp_stats` | block | absent | Present → poll VPP interface counters (enables `vpp.*` metrics). Omitted → no polling, and rules using `vpp.*` are rejected at startup. |

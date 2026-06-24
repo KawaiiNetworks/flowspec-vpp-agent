@@ -7,7 +7,8 @@ metrics:
 
 detector:
   dry_run: true
-  sflow:
-    listen: "0.0.0.0:6343"
+  collector:
+    sflow:
+      listen: "0.0.0.0:6343"
   vpp_stats:
     interval: 1s
