@@ -189,26 +189,19 @@ func (r *sampleRing) rate(now time.Time, slots int, metric metricKind) float64 {
 	return float64(packets) / seconds
 }
 
-// admitRescanEvery bounds how often admit() does a full O(N) weakest-instance
-// scan: at most once per this many admission attempts, plus an immediate rescan
-// whenever the cached victim is evicted or has disappeared. Between scans admit
-// reuses the cached victim and only refreshes that victim's estimate (O(1)), so
-// the eviction threshold still tracks sketch decay/collisions.
-const admitRescanEvery = 32
+// admitSampleSize bounds the work admit() does to find an eviction victim when the
+// pool is full. Scanning all max_instances entries on every non-resident packet is
+// O(N) — the hottest path under a high-cardinality flood (up to ~100kpps after
+// sFlow sampling). Instead we sample this many instances and evict the weakest of
+// the sample, the same approximate-eviction trick Redis uses for its LRU. Go
+// randomizes map iteration order per range, so the first N entries are effectively
+// a random sample.
+const admitSampleSize = 16
 
 type instanceStore struct {
 	max     int
 	history historySpec
 	items   map[descriptor]*instance
-
-	// cachedVictim is the weakest instance from the last full scan, reused to
-	// avoid rescanning the whole pool on every non-resident packet (the hottest
-	// path under a high-cardinality flood). cachedVictimOK is false when the
-	// cache must be refreshed before use.
-	cachedVictim    descriptor
-	cachedVictimEst float64
-	cachedVictimOK  bool
-	sinceScan       int
 }
 
 func newInstanceStore(history historySpec) *instanceStore {
@@ -237,55 +230,34 @@ func (s *instanceStore) admit(key descriptor, sketch *heavyKeeper, now time.Time
 		s.items[key] = inst
 		return inst, true
 	}
-	victimKey, victimEst, ok := s.weakestCached(sketch)
+	victimKey, victimEst, ok := s.weakestOfSample(sketch)
 	if !ok || sketch.estimate(key.hash()) <= victimEst {
 		return nil, false
 	}
 	delete(s.items, victimKey)
-	s.cachedVictimOK = false // evicted the cached victim; force a rescan next time
 	inst := newInstance(key, s.history, now)
 	s.items[key] = inst
 	return inst, true
 }
 
-// weakestCached returns the instance to consider for eviction, reusing the cached
-// victim and doing a full O(N) rescan only periodically (admitRescanEvery) or when
-// the cache is invalid/stale. This is an intentional approximation: between scans
-// the chosen victim may not be the absolute weakest, which only makes admission
-// slightly more conservative — it never overflows the pool nor evicts a heavy
-// instance, since admit still requires the candidate to beat the victim's estimate.
-func (s *instanceStore) weakestCached(sketch *heavyKeeper) (descriptor, float64, bool) {
-	s.sinceScan++
-	switch {
-	case !s.cachedVictimOK, s.sinceScan >= admitRescanEvery:
-		s.refreshVictim(sketch)
-	default:
-		if inst, present := s.items[s.cachedVictim]; !present {
-			s.refreshVictim(sketch)
-		} else {
-			// Keep the eviction threshold current without a full scan.
-			s.cachedVictimEst = sketch.estimate(inst.keyHash)
-		}
-	}
-	return s.cachedVictim, s.cachedVictimEst, s.cachedVictimOK
-}
-
-func (s *instanceStore) refreshVictim(sketch *heavyKeeper) {
-	s.cachedVictim, s.cachedVictimEst, s.cachedVictimOK = s.weakest(sketch)
-	s.sinceScan = 0
-}
-
-// weakest returns the tracked instance with the lowest sketch estimate. It is
-// O(max_instances); callers go through weakestCached to amortize it.
-func (s *instanceStore) weakest(sketch *heavyKeeper) (descriptor, float64, bool) {
+// weakestOfSample returns the weakest (lowest sketch estimate) of up to
+// admitSampleSize randomly-sampled instances — O(sample size) instead of
+// O(max_instances), and exact when the pool holds fewer than that. Picking a
+// not-quite-weakest victim only makes admission slightly less precise: admit still
+// requires the candidate to beat it, so the pool never overflows and a genuinely
+// heavy instance is never evicted.
+func (s *instanceStore) weakestOfSample(sketch *heavyKeeper) (descriptor, float64, bool) {
 	var victimKey descriptor
 	var min float64
-	found := false
+	n := 0
 	for k, inst := range s.items {
 		est := sketch.estimate(inst.keyHash)
-		if !found || est < min {
-			victimKey, min, found = k, est, true
+		if n == 0 || est < min {
+			victimKey, min = k, est
+		}
+		if n++; n >= admitSampleSize {
+			break
 		}
 	}
-	return victimKey, min, found
+	return victimKey, min, n > 0
 }
