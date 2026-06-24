@@ -87,6 +87,7 @@ rules:
   - name: icmp-flood-host-ipv4
     match: { family: ipv4, proto: icmp }
     aggregate: { proto: exact, src: "/0", dst: "/32", icmp_type: all, icmp_code: all }
+    ratio_detection: [ { name: src, min_ratio: 30 } ]
     rank: pps
     history: { fine: { resolution: 1s, duration: 10m }, max_instances: 30 }
     trigger:
