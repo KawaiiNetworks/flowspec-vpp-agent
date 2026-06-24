@@ -43,6 +43,9 @@ func (s *Server) handlePath(path *api.Path) {
 	if session == "" {
 		session = path.GetSourceId()
 	}
+	// Canonicalize so equivalent IPv6 spellings match the configured receive-peer
+	// set and stay consistent as the session/refcount key across announce/withdraw.
+	session = normalizeAddr(session)
 	// adj-rib-in is watched pre-policy, so apply the per-peer receive gate here:
 	// a non-receive peer's FlowSpec must never reach the manager / VPP.
 	if !s.receivePeers[session] {
@@ -89,7 +92,7 @@ func (s *Server) handlePeerEvent(pe *api.WatchEventResponse_PeerEvent) {
 	if peer == nil || peer.GetState() == nil {
 		return
 	}
-	addr := peer.GetState().GetNeighborAddress()
+	addr := normalizeAddr(peer.GetState().GetNeighborAddress())
 	if peer.GetState().GetSessionState() == api.PeerState_ESTABLISHED {
 		// Coming up: nothing to do here; ADJIN replay will (re)announce its rules.
 		return

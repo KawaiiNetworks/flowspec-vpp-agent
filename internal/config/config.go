@@ -327,6 +327,9 @@ func (c Config) Validate() error {
 		if err := validateBGPListen(c.BGP.Listen); err != nil {
 			return err
 		}
+		if c.BGP.ASN == 0 {
+			return fmt.Errorf("bgp.asn must be set when bgp.peers are configured")
+		}
 		if c.BGP.RouterID == "" {
 			return fmt.Errorf("bgp.router_id must be set when bgp.peers are configured")
 		}

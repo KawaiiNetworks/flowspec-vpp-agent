@@ -15,6 +15,7 @@ func TestRunHealthcheck_MetricsDisabled(t *testing.T) {
   listen: ""
 bgp:
   router_id: 192.0.2.1
+  asn: 65000
   peers:
     - address: 198.51.100.1
       peer_asn: 65001

@@ -41,6 +41,7 @@ func TestParse_MetricsListenEnabled(t *testing.T) {
 	cfg, err := Parse([]byte(`
 bgp:
   router_id: 192.0.2.1
+  asn: 65000
   peers:
     - address: 198.51.100.1
       peer_asn: 65001
@@ -115,6 +116,7 @@ func TestParse_PeerDirections(t *testing.T) {
 	cfg, err := Parse([]byte(`
 bgp:
   router_id: 192.0.2.1
+  asn: 65000
   peers:
     - address: 198.51.100.1
       peer_asn: 65001
@@ -156,6 +158,7 @@ func TestParse_IPv6Listen(t *testing.T) {
 bgp:
   listen: "[2001:db8::1]:10179"
   router_id: 192.0.2.1
+  asn: 65000
   peers:
     - address: 198.51.100.1
       peer_asn: 65001

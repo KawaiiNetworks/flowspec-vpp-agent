@@ -38,7 +38,11 @@ func (s *Server) Advertise(ctx context.Context, r flowspec.Rule, withdraw bool) 
 		gobgp.NewPathAttributeOrigin(0), // IGP
 		gobgp.NewPathAttributeMpReachNLRI(nexthop, []gobgp.AddrPrefixInterface{nlri}),
 		gobgp.NewPathAttributeExtendedCommunities([]gobgp.ExtendedCommunityInterface{
-			gobgp.NewTrafficRateExtended(uint16(s.opts.ASN), 0), // rate 0 == discard
+			// rate 0 == discard. The AS field is only 2 bytes (RFC 8955) and purely
+			// informational for a discard, so a 32-bit ASN is intentionally truncated
+			// here; receivers ignore it when the rate is 0. If 4-byte-ASN fidelity ever
+			// matters, pass 0 instead of truncating.
+			gobgp.NewTrafficRateExtended(uint16(s.opts.ASN), 0),
 		}),
 	}
 	path, err := apiutil.NewPath(nlri, false, attrs, time.Now())

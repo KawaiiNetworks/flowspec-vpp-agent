@@ -1,0 +1,17 @@
+# Keep the Docker build context minimal: the Dockerfile only needs the Go
+# sources and module files. Everything below is either rebuilt in the image,
+# irrelevant to the build, or local state that must not leak into it.
+.git
+.github
+bin/
+*.dump
+persist.dump
+
+# Docs and local/dev files
+*.md
+docs/
+deploy/
+.gitignore
+.dockerignore
+.vscode/
+.idea/

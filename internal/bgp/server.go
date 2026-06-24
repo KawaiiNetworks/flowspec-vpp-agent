@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
 
 	api "github.com/osrg/gobgp/v3/api"
@@ -59,7 +60,7 @@ func New(opts Options, logger *slog.Logger) *Server {
 	receivePeers := make(map[string]bool, len(opts.Peers))
 	for _, p := range opts.Peers {
 		if p.Receive {
-			receivePeers[p.Address] = true
+			receivePeers[normalizeAddr(p.Address)] = true
 		}
 	}
 	return &Server{
@@ -74,6 +75,17 @@ func New(opts Options, logger *slog.Logger) *Server {
 // Updates returns the channel of FlowSpec events. The consumer reads it until
 // its own context is cancelled; the channel is never closed (see Stop).
 func (s *Server) Updates() <-chan Update { return s.updates }
+
+// normalizeAddr canonicalizes an IP string so equivalent spellings compare equal
+// (e.g. "2001:db8:0:0::1" and "2001:db8::1"). It keys the receive-peer set and
+// identifies sessions, so GoBGP's spelling of a peer address always matches the
+// configured one. Non-IP identifiers are returned unchanged.
+func normalizeAddr(s string) string {
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.String()
+	}
+	return s
+}
 
 // send delivers u to the updates channel. It blocks until the consumer accepts
 // the update — FlowSpec must not be silently dropped, since a dropped announce

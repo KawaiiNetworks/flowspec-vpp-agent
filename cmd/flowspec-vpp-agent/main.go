@@ -85,7 +85,7 @@ func run(cfg config.Config, logger *slog.Logger) error {
 	// opt-in, so default deployments do not expose an extra listener.
 	reg := prometheus.NewRegistry()
 	met := metrics.New(reg)
-	status := &statusProvider{}
+	status := &statusProvider{started: time.Now()}
 	httpSrv := startHTTP(cfg.Metrics.Listen, reg, status, clog)
 	defer shutdownHTTP(httpSrv, clog)
 
@@ -163,6 +163,11 @@ func run(cfg config.Config, logger *slog.Logger) error {
 		if err := collector.Listen(); err != nil {
 			return fmt.Errorf("listen sFlow: %w", err)
 		}
+		status.setCollector(collector)
+		reg.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "sflow_samples_dropped_total",
+			Help: "sFlow samples dropped because the detector sample queue was full.",
+		}, func() float64 { return float64(collector.Dropped()) }))
 		go func() {
 			if err := collector.Run(ctx); err != nil {
 				dlog.Error("sFlow collector failed", "error", err)
@@ -208,6 +213,10 @@ func run(cfg config.Config, logger *slog.Logger) error {
 
 		runner := detector.NewRunnerWithContext(engine, samples, events, detector.EvalContext{Stats: statsView}, dlog)
 		status.setRunner(runner)
+		reg.MustRegister(prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "detector_events_dropped_total",
+			Help: "Detector events dropped because the local-rule queue was full.",
+		}, func() float64 { return float64(runner.DroppedEvents()) }))
 		runnerDone := make(chan struct{})
 		go func() {
 			runner.Run(ctx)

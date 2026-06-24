@@ -3,6 +3,7 @@ package detector
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,7 +24,14 @@ type Runner struct {
 	// the runner stops.
 	snapshotReq chan chan EngineSnapshot
 	done        chan struct{}
+
+	droppedEvents atomic.Int64 // events dropped because the local-rule queue was full
 }
+
+// DroppedEvents returns the cumulative number of detector events dropped because
+// the downstream local-rule queue was full (a dropped event is an un-applied
+// mitigation, so a rising value is operationally significant).
+func (r *Runner) DroppedEvents() int64 { return r.droppedEvents.Load() }
 
 func NewRunner(engine *Engine, samples <-chan Sample, events chan<- Event, logger *slog.Logger) *Runner {
 	return NewRunnerWithContext(engine, samples, events, EvalContext{}, logger)
@@ -74,6 +82,7 @@ func (r *Runner) Run(ctx context.Context) {
 				select {
 				case r.events <- ev:
 				default:
+					r.droppedEvents.Add(1)
 					r.log.Debug("drop detector event: local rule queue full", "event", ev.ID)
 				}
 			}

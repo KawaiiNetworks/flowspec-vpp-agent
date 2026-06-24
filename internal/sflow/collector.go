@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/kawaiinetworks/flowspec-vpp-agent/internal/detector"
@@ -16,7 +17,13 @@ type Collector struct {
 	samples chan<- detector.Sample
 	log     *slog.Logger
 	decoder Decoder
+	dropped atomic.Int64 // samples dropped because the detector queue was full
 }
+
+// Dropped returns the cumulative number of samples dropped because the detector
+// queue was full. A non-zero (especially rising) value means the detector cannot
+// keep up and some sampled traffic is going unseen.
+func (c *Collector) Dropped() int64 { return c.dropped.Load() }
 
 // NewCollector creates a UDP sFlow collector.
 func NewCollector(listen string, samples chan<- detector.Sample, logger *slog.Logger) *Collector {
@@ -83,6 +90,7 @@ func (c *Collector) Run(ctx context.Context) error {
 			select {
 			case c.samples <- s:
 			default:
+				c.dropped.Add(1)
 				c.log.Debug("drop sFlow sample: detector queue full")
 			}
 		}

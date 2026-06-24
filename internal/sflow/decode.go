@@ -282,7 +282,12 @@ func decodeIPv4(b []byte) (detector.Sample, bool) {
 		Proto:     proto,
 		PacketLen: totalLen,
 	}
-	fillPorts(&s, b[ihl:])
+	// Only the first fragment (fragment offset 0) carries the L4 header. Reading
+	// ports from a later fragment would parse payload bytes as a TCP/UDP header and
+	// fabricate ports, so skip them for non-initial fragments.
+	if binary.BigEndian.Uint16(b[6:8])&0x1fff == 0 {
+		fillPorts(&s, b[ihl:])
+	}
 	return s, true
 }
 
@@ -325,6 +330,15 @@ func skipIPv6ExtHeaders(next byte, rest []byte) (proto byte, l4 []byte) {
 			}
 			hdrLen = (int(rest[1]) + 1) * 8
 		case extFragment:
+			if len(rest) < 8 {
+				return next, nil
+			}
+			// Only the first fragment (offset 0) carries the L4 header. For a later
+			// fragment the real upper-layer protocol is still known (the Fragment
+			// header's Next Header), but there are no ports to read.
+			if binary.BigEndian.Uint16(rest[2:4])>>3 != 0 {
+				return rest[0], nil
+			}
 			hdrLen = 8 // fixed length; rest[1] is reserved, not a length field
 		case extAH:
 			if len(rest) < 2 {
