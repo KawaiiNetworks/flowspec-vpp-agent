@@ -179,7 +179,7 @@ detector:
 | `builtin_rules` | bool | `true` | 自动启用全部内置规则。最终生效集合 = 内置规则（启用时）∪ `rules_enabled`。 |
 | `rules_enabled` | list | 空 | 额外启用的规则名，与内置规则**合并** —— 启用 `rules_dir` 里的规则就靠它。设 `builtin_rules: false` 时，它改为「从内置规则里挑子集」。名字在内置规则与 `rules_dir` 中解析。`builtin_rules: false` 且此项为空会被拒绝（没规则可跑）。 |
 | `collector.sflow.listen` | string | `0.0.0.0:6343` | sFlow v5 UDP 监听地址（用 `sflow` 源时设置）。 |
-| `collector.psample.group` | int | `0` | 接受的 PSAMPLE sample-group id（`0` = 任意）。与 VPP sflow plugin 采样的 group 一致。 |
+| `collector.psample.group` | int | `0` | 只接受 `SAMPLE_GROUP` 属性等于此值的 PSAMPLE 消息;`0` = 接受全部(推荐)。这是 VPP 写进每条 PSAMPLE 消息的 per-sample group,**不是** hsflowd 的 `psample { group }`(那个无关、且不做过滤)。 |
 | `sample_queue` | int | `65536` | 有界 sample 队列（`0` → 用默认）；处理不过来时丢采样，不增长内存。 |
 | `event_queue` | int | `1024` | 有界事件队列（`0` → 用默认）。 |
 | `vpp_stats` | block | 无 | 存在 → 轮询 VPP 接口计数器（启用 `vpp.*` 指标）；省略 → 不轮询，且用了 `vpp.*` 的规则会在启动时被拒绝。 |

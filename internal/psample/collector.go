@@ -155,7 +155,7 @@ func (c *Collector) decode(m genetlink.Message, now time.Time) (detector.Sample,
 	for ad.Next() {
 		switch ad.Type() {
 		case attrIIFIndex:
-			ifindex = uint32(ad.Uint16())
+			ifindex = ad.Uint32() // PSAMPLE_ATTR_IIFINDEX is u32 (4 bytes)
 		case attrSampleGroup:
 			group = ad.Uint32()
 			haveGroup = true

@@ -25,10 +25,10 @@ func ethIPv4UDP(src, dst string, sport, dport uint16) []byte {
 	return b
 }
 
-func psampleMsg(t *testing.T, group, rate uint32, ifindex uint16, data []byte) genetlink.Message {
+func psampleMsg(t *testing.T, group, rate, ifindex uint32, data []byte) genetlink.Message {
 	t.Helper()
 	ae := netlink.NewAttributeEncoder()
-	ae.Uint16(attrIIFIndex, ifindex)
+	ae.Uint32(attrIIFIndex, ifindex) // PSAMPLE_ATTR_IIFINDEX is u32
 	ae.Uint32(attrSampleGroup, group)
 	ae.Uint32(attrSampleRate, rate)
 	ae.Bytes(attrData, data)

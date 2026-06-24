@@ -206,7 +206,7 @@ detector:
 | `builtin_rules` | bool | `true` | Auto-enable every embedded built-in rule. The effective set is the built-ins (when enabled) merged with `rules_enabled`. |
 | `rules_enabled` | list | empty | Extra rule names to activate, merged with the built-ins — this is how you enable a `rules_dir` rule. With `builtin_rules: false` it instead selects a subset of built-ins. Names resolve against the built-ins plus `rules_dir`. With `builtin_rules: false` and an empty list, the config is rejected (nothing to run). |
 | `collector.sflow.listen` | string | `0.0.0.0:6343` | UDP listen address for sFlow v5 datagrams. Set when using the `sflow` source. |
-| `collector.psample.group` | int | `0` | PSAMPLE sample-group id to accept (`0` = any). Match the group VPP's sflow plugin samples into. |
+| `collector.psample.group` | int | `0` | Accept only PSAMPLE messages whose `SAMPLE_GROUP` attribute equals this; `0` = accept all (recommended). This is the per-sample group VPP writes into each PSAMPLE message, **not** hsflowd's `psample { group }` setting (which is unrelated and does not filter). |
 | `sample_queue` | int | `65536` | Bounded sample queue (`0` → default). Full queues drop sampled packets instead of growing memory. |
 | `event_queue` | int | `1024` | Bounded detector-event queue (`0` → default). |
 | `vpp_stats` | block | absent | Present → poll VPP interface counters (enables `vpp.*` metrics). Omitted → no polling, and rules using `vpp.*` are rejected at startup. |
