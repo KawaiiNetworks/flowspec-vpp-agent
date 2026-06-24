@@ -150,6 +150,16 @@ metrics:
 （Linux netlink PSAMPLE，由 VPP 原生 sflow plugin 直接喂入，无需 hsflowd 和 UDP 中转）
 **二选一**。`psample` 需要内核 `psample` 模块和一个配置为采样到该通道的 VPP `sflow` plugin。
 
+**在容器里部署 `psample`** 有两个额外要求（`sflow` 采集源都不需要）：
+
+- **`CAP_NET_ADMIN`** —— 订阅 PSAMPLE netlink 多播组需要它；Docker 默认即使 root 也会
+  drop 掉（`cap_add: [NET_ADMIN]`）。
+- **host network namespace**（`network_mode: host`）—— PSAMPLE 多播是 per-netns 的，
+  agent 必须和 VPP 在同一 namespace，否则即使给了 `CAP_NET_ADMIN` 也一条都收不到。
+
+host 上还要加载 `psample` 内核模块（VPP `sflow enable` 通常会触发加载；否则
+`modprobe psample`）。参见 `deploy/compose.yaml`。
+
 **检测器由 `detector:` 段的存在来启用** —— 没有 `enabled` 开关。同理，`vpp_stats`
 由 `vpp_stats:` 块的存在来启用；省略对应段即关闭。
 

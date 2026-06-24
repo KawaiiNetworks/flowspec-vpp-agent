@@ -176,6 +176,18 @@ e.g. from hsflowd) or `psample` (Linux netlink PSAMPLE, fed directly by VPP's
 native sFlow plugin — no hsflowd or UDP hop). `psample` requires the kernel
 `psample` module and a VPP `sflow` plugin configured to sample into it.
 
+**Deploying `psample` in a container** has two extra requirements (the `sflow`
+collector needs neither):
+
+- **`CAP_NET_ADMIN`** — subscribing to the PSAMPLE netlink multicast group needs
+  it; Docker drops it by default even for root (`cap_add: [NET_ADMIN]`).
+- **host network namespace** (`network_mode: host`) — PSAMPLE multicast is
+  per-netns, so the agent must run in the same namespace as VPP, or it receives
+  nothing even with `CAP_NET_ADMIN`.
+
+The host must also have the `psample` kernel module loaded (VPP `sflow enable`
+usually loads it; otherwise `modprobe psample`). See `deploy/compose.yaml`.
+
 **The detector is enabled by the presence of a `detector:` section** — there is
 no `enabled` flag. Likewise `vpp_stats` is enabled by the presence of a
 `vpp_stats:` block. Omit the section to disable.

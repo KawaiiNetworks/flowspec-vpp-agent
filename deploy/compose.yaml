@@ -29,6 +29,17 @@ services:
     # Access the root-owned api.sock. Infrastructure agent runs as root (§19.3).
     user: "0:0"
 
+    # Only needed for the psample collector (detector.collector.psample): it
+    # subscribes to a netlink PSAMPLE multicast group, which requires
+    # CAP_NET_ADMIN — Docker drops it by default even for root. It also relies on
+    # network_mode: host above, because PSAMPLE multicast is per-netns and the
+    # agent must share VPP's namespace. The sflow (UDP) collector needs neither;
+    # leaving NET_ADMIN on is harmless. Prereq: the host must have the psample
+    # kernel module loaded (VPP `sflow enable` usually loads it, else
+    # `modprobe psample`).
+    cap_add:
+      - NET_ADMIN
+
     # With metrics.listen unset (the default), this is a no-op. If you enable the
     # optional metrics/health listener, it probes the local /healthz endpoint.
     healthcheck:
